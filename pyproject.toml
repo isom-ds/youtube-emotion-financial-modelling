@@ -5,16 +5,27 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "aiohttp==3.10.5",
+    "apism",
+    "bertopic>=0.17.3",
     "fastparquet>=2024.11.0",
+    "google-cloud>=0.34.0",
+    "google-cloud-storage>=3.3.0",
     "ipykernel>=6.30.1",
+    "isodate>=0.7.2",
     "jinja2>=3.1.6",
     "jupyter-summarytools>=0.2.3",
     "matplotlib>=3.10.5",
     "openai>=1.99.1",
+    "openpyxl>=3.1.5",
     "pandas>=2.3.1",
+    "polars>=1.32.2",
     "pyarrow>=21.0.0",
     "scipy>=1.16.1",
     "seaborn>=0.13.2",
+    "swifter>=1.4.0",
+    "tqdm>=4.67.1",
+    "xlsxwriter>=3.2.5",
 ]
 
 [dependency-groups]
@@ -24,3 +35,6 @@ dev = [
     "mkdocs-material>=9.6.16",
     "ruff>=0.12.7",
 ]
+
+[tool.uv.sources]
+apism = { git = "https://github.com/isom-ds/apism.git" }
