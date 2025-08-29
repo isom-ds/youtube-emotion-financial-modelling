@@ -204,3 +204,4 @@ __marimo__/
 
 # Keys and Secrets
 keys.py
+.DS_Store
