@@ -7,8 +7,6 @@ from tqdm import tqdm
 
 from keys import openai_key
 from modules.ai.identification import create_system_prompt, create_emotion_topic_model
-from openai_wrapper.utils import fixErrorsOpenAI
-
 
 def create_batch_payload(
     data: list,

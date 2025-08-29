@@ -6,26 +6,26 @@ from tqdm.notebook import tqdm
 from constants import plutchik, topic_list
 
 
-def create_col_from_emo(data: pd.DataFrame, cols: list = plutchik) -> pd.DataFrame:
+def create_col_from_emo(data: pd.DataFrame, targetcol: str, cols: list = plutchik) -> pd.DataFrame:
 
     df = deepcopy(data)
 
     # Create separate columns using .map()
     for emotion in cols:
-        df[emotion] = df["emotions"].map(
-            lambda x: 1 if isinstance(x, list) and emotion in x else 0
+        df[emotion] = df[targetcol].map(
+            lambda x: 1 if x == emotion else 0
         )
 
     return df
 
 
-def create_col_from_topic(data: pd.DataFrame, cols: list = topic_list) -> pd.DataFrame:
+def create_col_from_topic(data: pd.DataFrame, targetcol: str, cols: list = topic_list) -> pd.DataFrame:
 
     df = deepcopy(data)
 
     # Create separate columns using .map()
     for topic in cols:
-        df[topic] = df["topics"].map(
+        df[topic] = df[targetcol].map(
             lambda x: 1 if isinstance(x, list) and topic in x else 0
         )
 
