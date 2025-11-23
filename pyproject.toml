@@ -26,6 +26,7 @@ dependencies = [
     "swifter>=1.4.0",
     "tqdm>=4.67.1",
     "xlsxwriter>=3.2.5",
+    "yfinance>=0.2.66",
 ]
 
 [dependency-groups]
