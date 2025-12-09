@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import pandas as pd
 from copy import deepcopy
-from constants import topic_list
 
 # Define emotion groups and their colors
 emocols = [
@@ -26,23 +26,40 @@ emocolours = {
     "sadness": "#FF8787",
 }
 
-# Define topic groups and their colors
-topiccols = [
-    "date",
-    "damages",
-    "hurricane advice",
-    "hurricane relief services",
-    "personal opinion",
-    "weather information",
-]
-topiccolours = {
-    "damages": "#B62B2B",
-    "hurricane advice": "#fb8500",
-    "hurricane relief services": "#219ebc",
-    "personal opinion": "#ffb703",
-    "weather information": "#023047",
-    #'other': '#6c757d'
-}
+
+def get_topic_columns(df: pd.DataFrame) -> list:
+    """Extract topic columns from dataframe (all columns except 'date')."""
+    return ["date"] + [col for col in df.columns if col != "date"]
+
+
+def get_topic_colours(topics: list, cmap_name: str = "tab20") -> dict:
+    """Generate a colour mapping for topics dynamically using a matplotlib colormap.
+    
+    Args:
+        topics: List of topic names (may include 'date' which will be excluded)
+        cmap_name: Name of matplotlib colormap. Good options for many categories:
+            - 'tab20' (20 distinct colors)
+            - 'tab20b', 'tab20c' (20 more distinct colors)
+            - 'Set1', 'Set2', 'Set3' (9-12 colors)
+            - 'Paired' (12 colors)
+    """
+    # Exclude 'date' from topics if present
+    topic_names = [t for t in topics if t != "date"]
+    n_topics = len(topic_names)
+    
+    # Get colormap and generate evenly spaced colors
+    cmap = cm.get_cmap(cmap_name, max(n_topics, 1))
+    colors = [cmap(i) for i in range(n_topics)]
+    
+    # Convert RGBA to hex
+    return {
+        topic: "#{:02x}{:02x}{:02x}".format(
+            int(colors[i][0] * 255),
+            int(colors[i][1] * 255),
+            int(colors[i][2] * 255)
+        )
+        for i, topic in enumerate(topic_names)
+    }
 
 
 def plot_stack100(
@@ -52,14 +69,15 @@ def plot_stack100(
     titlestr: str,
     legend_cols: int = 8,
     legend_add_gap: float = 0.0,
+    topic_colours: dict | None = None,
 ):
     if datatype == "emotion":
         columns = emocols
         colours = emocolours
 
     if datatype == "topic":
-        columns = topiccols
-        colours = topiccolours
+        columns = get_topic_columns(data1)
+        colours = topic_colours if topic_colours else get_topic_colours(columns)
 
     df1 = deepcopy(data1)
     df2 = deepcopy(data2)
@@ -250,8 +268,10 @@ def epi_plot(
 def plot_ei_topic(
     data1: pd.DataFrame,
     data2: pd.DataFrame,
+    topic_list: list,
     legend_cols: int = 8,
     legend_add_gap: float = 0.0,
+    topic_colours: dict | None = None,
 ):
 
     df1 = deepcopy(data1)
@@ -262,6 +282,9 @@ def plot_ei_topic(
     # Set 'date' as index
     df1["date"] = pd.to_datetime(df1["date"], format="%Y-%m-%d")
     df2["date"] = pd.to_datetime(df2["date"], format="%Y-%m-%d")
+
+    # Generate dynamic topic colours if not provided
+    colours = topic_colours if topic_colours else get_topic_colours(topic_list)
 
     plt.rcParams.update({"font.size": 18})
 
@@ -276,14 +299,14 @@ def plot_ei_topic(
             ax1.plot(
                 df1["date"],
                 df1[f"ei_creator_{i}"],
-                color=topiccolours[i],
+                color=colours[i],
                 label=i,
                 linewidth=2,
             )
             ax3.plot(
                 df2["date"],
                 df2[f"ei_community_{i}"],
-                color=topiccolours[i],
+                color=colours[i],
                 label=i,
                 linewidth=2,
             )
@@ -291,8 +314,6 @@ def plot_ei_topic(
     # Formatting
     ax1.set_xlabel("")
     ax3.set_xlabel("")
-    ax5.set_xlabel("")
-    ax7.set_xlabel("")
     ax1.set_ylabel("Index")
 
     # Format x-axis dates as 'DD-Mon'
