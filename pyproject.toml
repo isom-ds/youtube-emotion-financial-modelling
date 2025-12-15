@@ -7,6 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "aiohttp==3.10.5",
     "apism",
+    "arch>=8.0.0",
     "bertopic>=0.17.3",
     "fastparquet>=2024.11.0",
     "google-cloud>=0.34.0",
