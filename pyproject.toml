@@ -17,6 +17,7 @@ dependencies = [
     "jinja2>=3.1.6",
     "jupyter-summarytools>=0.2.3",
     "matplotlib>=3.10.5",
+    "mlx>=0.30.0",
     "openai>=1.99.1",
     "openpyxl>=3.1.5",
     "pandas>=2.3.1",
