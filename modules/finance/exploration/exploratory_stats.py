@@ -117,13 +117,64 @@ def lead_lag_plot(ll: pd.DataFrame, title: str, outdir:str=None, save: bool = Fa
         savefig(os.path.join(outdir, f"{title}_leadlag.png".replace(" ", "_")), save=save)
 
 def find_topic_cols(cols, prefix: str):
-    # Keep: prefix_<topic> columns. Exclude base + weighted.
+    """
+    Find topic-level columns for a given prefix.
+    Enhanced to handle new naming conventions with _engweighted, _topicweighted suffixes.
+    
+    Args:
+        cols: DataFrame columns
+        prefix: Base prefix like 'ei_creator', 'ei_creator_engweighted', 'epi', etc.
+    
+    Returns:
+        List of topic columns matching the prefix (excludes aggregate versions)
+    """
     out = []
+    # List of aggregate patterns to exclude
+    base_patterns = [
+        prefix, 
+        f"{prefix}_weighted",  # old naming
+        f"{prefix}_engweighted", 
+        f"{prefix}_topicweighted", 
+        f"{prefix}_engweighted_topicweighted"
+    ]
+    
     for c in cols:
-        if c.startswith(prefix + "_") and c not in [prefix, f"{prefix}_weighted"]:
-            out.append(c)
-    out = [c for c in out if c not in [f"{prefix}_weighted", prefix]]
-    return out
+        if c.startswith(prefix + "_"):
+            # Exclude the base aggregate versions
+            if c not in base_patterns:
+                out.append(c)
+    
+    return sorted(out)
+
+
+def find_all_index_variants(columns, base_name: str) -> list:
+    """
+    Find all weighting variants of a base index.
+    
+    Args:
+        columns: DataFrame columns (pd.Index or list)
+        base_name: Base index name (e.g., 'epi', 'ccd', 'surprise')
+    
+    Returns:
+        List of variants found
+    
+    Example:
+        >>> find_all_index_variants(df.columns, 'epi')
+        ['epi', 'epi_engweighted', 'epi_topicweighted', 'epi_engweighted_topicweighted']
+    """
+    variants = []
+    
+    # Check for base
+    if base_name in columns:
+        variants.append(base_name)
+    
+    # Check for weighted variants
+    for suffix in ['_weighted', '_engweighted', '_topicweighted', '_engweighted_topicweighted']:
+        variant = f"{base_name}{suffix}"
+        if variant in columns:
+            variants.append(variant)
+    
+    return variants
 
 def topic_share_entropy(df_in: pd.DataFrame, topic_cols):
     X = df_in[topic_cols].copy()
