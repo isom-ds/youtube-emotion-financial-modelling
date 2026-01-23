@@ -498,13 +498,14 @@ def plot_indices(
         # Use data-driven limits with some padding
         y_range = data_max - data_min
         y_padding = y_range * 0.2  # 20% padding
-        ax1.set_ylim(data_min - (y_padding/10) , data_max + y_padding)
+        ul_padding = min(data_max + y_padding, 1.04)
+        ax1.set_ylim(data_min - (y_padding/10) , ul_padding)
     
     # Add event annotations if requested
     if add_events:
         # Get y-position for all text (aligned to top)
         y_max = ax1.get_ylim()[1]
-        y_text_pos = y_max * 0.95  # Position text at 95% of y-axis height
+        y_text_pos = y_max * 0.95 if ul_padding < 1.04 else y_max * 0.99  # Position text at 95% of y-axis height
         
         # Initial Tariff Announcements (20 Jan - 26 Jan)
         ax1.axvspan(
