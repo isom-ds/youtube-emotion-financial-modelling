@@ -85,12 +85,111 @@ def rolling_cv_splits(n_samples: int, initial_train_size: int, step_size: int, t
 # ----------------------------
 # 3) Group-aware ARX builder with group-specific lag0 control
 # ----------------------------
+
+# Index family column prefixes for heterogeneous lag support
+INDEX_FAMILIES = {
+    "ei": ["ei_creator", "ei_creator_engweighted", "ei_creator_topicweighted", 
+           "ei_creator_engweighted_topicweighted", "ei_community", "ei_community_topicweighted"],
+    "epi": ["epi", "epi_engweighted", "epi_topicweighted", "epi_engweighted_topicweighted"],
+    "epi_signed": ["epi_signed", "epi_signed_engweighted", "epi_signed_topicweighted", 
+                   "epi_signed_engweighted_topicweighted"],
+    "ccd": ["ccd", "ccd_engweighted", "ccd_topicweighted", "ccd_engweighted_topicweighted"],
+    "intensity": ["intensity", "intensity_engweighted", "intensity_topicweighted", 
+                  "intensity_engweighted_topicweighted"],
+    "surprise": ["surprise", "surprise_engweighted", "surprise_topicweighted", 
+                 "surprise_engweighted_topicweighted"],
+    "split": ["split"],
+}
+
+
+def _classify_social_columns(columns: List[str]) -> Dict[str, List[str]]:
+    """Classify social columns into index families."""
+    classified = {family: [] for family in INDEX_FAMILIES}
+    unclassified = []
+    
+    for col in columns:
+        col_lower = col.lower()
+        matched = False
+        
+        # Check each family (order matters: check more specific first)
+        # epi_signed before epi, ei_creator/ei_community before general
+        for family, prefixes in INDEX_FAMILIES.items():
+            for prefix in prefixes:
+                if col_lower == prefix or col_lower.startswith(prefix + "_"):
+                    # Exact match or prefix match
+                    if col not in classified[family]:
+                        classified[family].append(col)
+                    matched = True
+                    break
+            if matched:
+                break
+        
+        if not matched:
+            unclassified.append(col)
+    
+    return classified, unclassified
+
+
 @dataclass
 class LagSpec:
+    """
+    Lag specification for ARX models with heterogeneous emotion index lags.
+    
+    Supports per-family lag orders for fine-grained control over how different
+    emotion indices enter the model with potentially different lag structures.
+    """
     ar_p: int
-    q_social: int
     q_controls: int
     q_cross: int
+    # Per-family emotion index lags (heterogeneous)
+    q_ei: int = 0
+    q_epi: int = 0
+    q_epi_signed: int = 0
+    q_ccd: int = 0
+    q_intensity: int = 0
+    q_surprise: int = 0
+    q_split: int = 0
+    # Backward compatibility: if set, overrides all family lags
+    q_social: Optional[int] = None
+    
+    def __post_init__(self):
+        """Handle backward compatibility with q_social."""
+        if self.q_social is not None:
+            import warnings
+            warnings.warn(
+                "LagSpec.q_social is deprecated. Use per-family lags "
+                "(q_ei, q_epi, q_epi_signed, q_ccd, q_intensity, q_surprise, q_split) instead.",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            # Set all family lags to q_social value
+            self.q_ei = self.q_social
+            self.q_epi = self.q_social
+            self.q_epi_signed = self.q_social
+            self.q_ccd = self.q_social
+            self.q_intensity = self.q_social
+            self.q_surprise = self.q_social
+            self.q_split = self.q_social
+    
+    def get_family_lag(self, family: str) -> int:
+        """Get lag order for a specific index family."""
+        lag_map = {
+            "ei": self.q_ei,
+            "epi": self.q_epi,
+            "epi_signed": self.q_epi_signed,
+            "ccd": self.q_ccd,
+            "intensity": self.q_intensity,
+            "surprise": self.q_surprise,
+            "split": self.q_split,
+        }
+        return lag_map.get(family, 0)
+    
+    def has_any_social_lags(self) -> bool:
+        """Check if any social/emotion index lags are enabled."""
+        return any([
+            self.q_ei > 0, self.q_epi > 0, self.q_epi_signed > 0,
+            self.q_ccd > 0, self.q_intensity > 0, self.q_surprise > 0, self.q_split > 0
+        ])
 
 
 def _add_lags(
@@ -128,6 +227,9 @@ def make_group_arx_supervised(
       - socials: allow lag0 (signal dated t predicts t+1)
       - controls: lagged-only (avoid subtle simultaneity / reporting timing issues)
       - cross-assets: lagged-only (avoid mechanical contemporaneous correlations)
+    
+    Supports heterogeneous lag orders per emotion index family:
+      - ei, epi, epi_signed, ccd, intensity, surprise, split
     """
     y = y.astype(float)
 
@@ -137,11 +239,31 @@ def make_group_arx_supervised(
     for lag in range(1, lags.ar_p + 1):
         feat[f"y_lag{lag}"] = y.shift(lag)
 
-    # X groups
-    if social is not None:
-        _add_lags(feat, social, list(social.columns), lags.q_social, include_lag0_social, "soc_")
+    # Social/emotion indices with heterogeneous lags per family
+    if social is not None and not social.empty:
+        classified, unclassified = _classify_social_columns(list(social.columns))
+        
+        # Add lags for each family with its specific lag order
+        for family, cols in classified.items():
+            if cols:
+                family_lag = lags.get_family_lag(family)
+                if family_lag > 0 or include_lag0_social:
+                    _add_lags(feat, social, cols, family_lag, include_lag0_social, "soc_")
+        
+        # Handle unclassified columns with max of all family lags (fallback)
+        if unclassified:
+            max_lag = max(
+                lags.q_ei, lags.q_epi, lags.q_epi_signed, 
+                lags.q_ccd, lags.q_intensity, lags.q_surprise, lags.q_split
+            )
+            if max_lag > 0 or include_lag0_social:
+                _add_lags(feat, social, unclassified, max_lag, include_lag0_social, "soc_")
+    
+    # Controls
     if controls is not None:
         _add_lags(feat, controls, list(controls.columns), lags.q_controls, include_lag0_controls, "ctl_")
+    
+    # Cross-asset predictors
     if cross is not None:
         _add_lags(feat, cross, list(cross.columns), lags.q_cross, include_lag0_cross, "xas_")
 
@@ -163,20 +285,87 @@ def automl_group_arx(
     cross: Optional[pd.DataFrame],
     horizon: int = 1,
     initial_train_size: int = 60,
-    step_size: int = 5,
-    test_size: int = 5,
-    n_trials: int = 60,
+    step_size: int = 1,
+    test_size: int = 1,
+    n_trials: int = 300,
     random_seed: int = 42,
-    p_range=(1, 5),
-    q_social_range=(0, 3),
-    q_controls_range=(0, 5),
-    q_cross_range=(0, 1),
-    model_family="elasticnet",  # "elasticnet" or "ridge"
+    p_range: Tuple[int, int] = (1, 7),
+    q_controls_range: Tuple[int, int] = (0, 3),
+    q_cross_range: Tuple[int, int] = (0, 1),
+    # Per-family emotion index lag ranges (heterogeneous)
+    q_ei_range: Tuple[int, int] = (0, 5),
+    q_epi_range: Tuple[int, int] = (0, 5),
+    q_epi_signed_range: Tuple[int, int] = (0, 5),
+    q_ccd_range: Tuple[int, int] = (0, 5),
+    q_intensity_range: Tuple[int, int] = (0, 5),
+    q_surprise_range: Tuple[int, int] = (0, 5),
+    q_split_range: Tuple[int, int] = (0, 5),
+    model_family: str = "elasticnet",  # "elasticnet" or "ridge"
     include_lag0_social: bool = True,
     include_lag0_controls: bool = False,
     include_lag0_cross: bool = False,
+    use_pruning: bool = True,
+    cv_metric: str = "both",  # "mae", "rmse", or "both" (returns both, optimizes on mae)
+    # Deprecated parameter for backward compatibility
+    q_social_range: Optional[Tuple[int, int]] = None,
 ):
+    """
+    Optuna-based hyperparameter search for ARX models with heterogeneous emotion lags.
+    
+    Supports per-family lag orders for 7 emotion index families:
+    - ei: Emotion Index (creator/community sentiment)
+    - epi: Emotion Polarity Index (intensity × divergence)
+    - epi_signed: Signed EPI (preserves valence direction)
+    - ccd: Creator-Community Divergence
+    - intensity: Emotional Intensity
+    - surprise: Informational novelty
+    - split: Within-community polarization
+    
+    Args:
+        y: Target return series
+        social: Social/emotion index DataFrame
+        controls: Macro-financial control variables
+        cross: Cross-asset predictors (not used in univariate ARX)
+        horizon: Forecast horizon (1 = next trading day)
+        initial_train_size: Initial training window size
+        step_size: Step size for rolling window
+        test_size: Test set size per fold
+        n_trials: Number of Optuna trials (default 300 with pruning)
+        random_seed: Random seed for reproducibility
+        p_range: AR lag order range
+        q_controls_range: Control variable lag range
+        q_cross_range: Cross-asset lag range (set to (0,0) for univariate)
+        q_*_range: Per-family emotion index lag ranges
+        model_family: "elasticnet" or "ridge"
+        include_lag0_*: Whether to include contemporaneous (lag0) features
+        use_pruning: Whether to use Optuna MedianPruner
+        cv_metric: Metric(s) to compute ("mae", "rmse", or "both")
+        q_social_range: DEPRECATED - use per-family ranges instead
+    
+    Returns:
+        Dict with best_score_mae, best_score_rmse, best_lags, best_model_params,
+        coef_sorted, fitted_pipeline, study, feature_names
+    """
     import optuna
+    from sklearn.metrics import mean_squared_error
+    
+    # Handle deprecated q_social_range
+    if q_social_range is not None:
+        import warnings
+        warnings.warn(
+            "q_social_range is deprecated. Use per-family ranges "
+            "(q_ei_range, q_epi_range, etc.) instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        # Apply to all families
+        q_ei_range = q_social_range
+        q_epi_range = q_social_range
+        q_epi_signed_range = q_social_range
+        q_ccd_range = q_social_range
+        q_intensity_range = q_social_range
+        q_surprise_range = q_social_range
+        q_split_range = q_social_range
 
     def build_model(params: Dict):
         if model_family == "ridge":
@@ -188,7 +377,8 @@ def automl_group_arx(
             max_iter=20000,
         )
 
-    def cv_score(lags: LagSpec, params: Dict) -> float:
+    def cv_score(lags: LagSpec, params: Dict) -> Tuple[float, float]:
+        """Returns (mae, rmse) tuple."""
         X_sup, y_sup = make_group_arx_supervised(
             y=y, social=social, controls=controls, cross=cross,
             lags=lags, horizon=horizon,
@@ -198,24 +388,34 @@ def automl_group_arx(
         )
         splits = rolling_cv_splits(len(X_sup), initial_train_size, step_size, test_size)
         if not splits:
-            raise ValueError("No rolling CV splits possible (check window sizes vs sample length).")
+            return np.inf, np.inf
 
         pipe = Pipeline([("scaler", StandardScaler()), ("model", build_model(params))])
 
         Xn, yn = X_sup.to_numpy(), y_sup.to_numpy()
-        scores = []
+        mae_scores = []
+        rmse_scores = []
         for tr, te in splits:
             pipe.fit(Xn[tr], yn[tr])
             pred = pipe.predict(Xn[te])
-            scores.append(mean_absolute_error(yn[te], pred))
-        return float(np.mean(scores))
+            mae_scores.append(mean_absolute_error(yn[te], pred))
+            rmse_scores.append(np.sqrt(mean_squared_error(yn[te], pred)))
+        
+        return float(np.mean(mae_scores)), float(np.mean(rmse_scores))
 
     def objective(trial: optuna.Trial) -> float:
+        # Build LagSpec with heterogeneous emotion index lags
         lags = LagSpec(
             ar_p=trial.suggest_int("p", *p_range),
-            q_social=trial.suggest_int("q_social", *q_social_range),
             q_controls=trial.suggest_int("q_controls", *q_controls_range),
             q_cross=trial.suggest_int("q_cross", *q_cross_range),
+            q_ei=trial.suggest_int("q_ei", *q_ei_range),
+            q_epi=trial.suggest_int("q_epi", *q_epi_range),
+            q_epi_signed=trial.suggest_int("q_epi_signed", *q_epi_signed_range),
+            q_ccd=trial.suggest_int("q_ccd", *q_ccd_range),
+            q_intensity=trial.suggest_int("q_intensity", *q_intensity_range),
+            q_surprise=trial.suggest_int("q_surprise", *q_surprise_range),
+            q_split=trial.suggest_int("q_split", *q_split_range),
         )
 
         if model_family == "ridge":
@@ -226,21 +426,44 @@ def automl_group_arx(
                 "l1_ratio": trial.suggest_float("l1_ratio", 0.05, 0.95),
             }
 
-        return cv_score(lags, params)
+        mae, rmse = cv_score(lags, params)
+        
+        # Store both metrics as user attributes
+        trial.set_user_attr("mae", mae)
+        trial.set_user_attr("rmse", rmse)
+        
+        # Optimize on MAE (primary metric)
+        return mae
 
+    # Configure Optuna with optional pruning
     sampler = optuna.samplers.TPESampler(seed=random_seed)
-    study = optuna.create_study(direction="minimize", sampler=sampler)
-    study.optimize(objective, n_trials=n_trials)
+    if use_pruning:
+        pruner = optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=5)
+        study = optuna.create_study(direction="minimize", sampler=sampler, pruner=pruner)
+    else:
+        study = optuna.create_study(direction="minimize", sampler=sampler)
+    
+    # Suppress Optuna logging
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
 
+    # Extract best parameters
     best = study.best_params.copy()
     best_lags = LagSpec(
         ar_p=best.pop("p"),
-        q_social=best.pop("q_social"),
         q_controls=best.pop("q_controls"),
         q_cross=best.pop("q_cross"),
+        q_ei=best.pop("q_ei"),
+        q_epi=best.pop("q_epi"),
+        q_epi_signed=best.pop("q_epi_signed"),
+        q_ccd=best.pop("q_ccd"),
+        q_intensity=best.pop("q_intensity"),
+        q_surprise=best.pop("q_surprise"),
+        q_split=best.pop("q_split"),
     )
     best_params = best
 
+    # Fit final model on full data
     X_sup, y_sup = make_group_arx_supervised(
         y=y, social=social, controls=controls, cross=cross,
         lags=best_lags, horizon=horizon,
@@ -256,13 +479,21 @@ def automl_group_arx(
         key=np.abs, ascending=False
     )
 
+    # Get best trial metrics
+    best_mae = study.best_trial.user_attrs.get("mae", study.best_value)
+    best_rmse = study.best_trial.user_attrs.get("rmse", np.nan)
+
     return {
-        "best_score_mae": float(study.best_value),
+        "best_score_mae": float(best_mae),
+        "best_score_rmse": float(best_rmse),
         "best_lags": best_lags,
         "best_model_family": model_family,
         "best_model_params": best_params,
         "coef_sorted": coef,
         "fitted_pipeline": final_pipe,
+        "feature_names": list(X_sup.columns),
+        "X_supervised": X_sup,
+        "y_supervised": y_sup,
         "study": study,
     }
 
@@ -322,19 +553,27 @@ def run_three_assets_on_returns(
     if isinstance(returns_fill_flags, pd.DataFrame) and not returns_fill_flags.empty:
         controls_final = pd.concat([controls_final, returns_fill_flags], axis=1)
 
-    # 5) Cross-asset predictors = other two return series (use lagged-only in model)
+    # 5) For univariate ARX, no cross-asset predictors (use VARX for cross-asset)
     r = returns_filled
-    cross_for = {
-        "sp500":   r[["bitcoin", "gold"]],
-        "bitcoin": r[["sp500", "gold"]],
-        "gold":    r[["sp500", "bitcoin"]],
-    }
 
     # Asset-specific bounds (sane for Jan–May trading days)
+    # Using new heterogeneous lag interface with all emotion index families
     bounds = {
-        "sp500":  dict(p_range=(1, 5), q_social_range=(0, 2), q_controls_range=(0, 3), q_cross_range=(0, 1)),
-        "bitcoin":dict(p_range=(1, 7), q_social_range=(0, 3), q_controls_range=(0, 2), q_cross_range=(0, 1)),
-        "gold":   dict(p_range=(1, 5), q_social_range=(0, 2), q_controls_range=(0, 5), q_cross_range=(0, 1)),
+        "sp500":  dict(
+            p_range=(1, 5), q_controls_range=(0, 3), q_cross_range=(0, 0),
+            q_ei_range=(0, 3), q_epi_range=(0, 3), q_epi_signed_range=(0, 3),
+            q_ccd_range=(0, 3), q_intensity_range=(0, 3), q_surprise_range=(0, 3), q_split_range=(0, 3),
+        ),
+        "bitcoin": dict(
+            p_range=(1, 7), q_controls_range=(0, 2), q_cross_range=(0, 0),
+            q_ei_range=(0, 5), q_epi_range=(0, 5), q_epi_signed_range=(0, 5),
+            q_ccd_range=(0, 5), q_intensity_range=(0, 5), q_surprise_range=(0, 5), q_split_range=(0, 5),
+        ),
+        "gold":   dict(
+            p_range=(1, 5), q_controls_range=(0, 5), q_cross_range=(0, 0),
+            q_ei_range=(0, 3), q_epi_range=(0, 3), q_epi_signed_range=(0, 3),
+            q_ccd_range=(0, 3), q_intensity_range=(0, 3), q_surprise_range=(0, 3), q_split_range=(0, 3),
+        ),
     }
 
     results = {}
@@ -343,17 +582,18 @@ def run_three_assets_on_returns(
             y=r[asset],
             social=social_td,
             controls=controls_final,
-            cross=cross_for[asset],
+            cross=None,  # Univariate: no cross-asset predictors
             horizon=horizon,                 # horizon=1 => predict next trading day's return
             initial_train_size=60,
-            step_size=5,
-            test_size=5,
-            n_trials=60,
+            step_size=1,
+            test_size=1,
+            n_trials=300,
             model_family="elasticnet",
+            use_pruning=True,
             # key paper-safe timing choices:
             include_lag0_social=True,        # socials dated t predict t+1
             include_lag0_controls=False,     # conservative: controls lagged-only
-            include_lag0_cross=False,        # avoid mechanical contemporaneous spillovers
+            include_lag0_cross=False,        # not used in univariate
             **bounds[asset],
         )
 
