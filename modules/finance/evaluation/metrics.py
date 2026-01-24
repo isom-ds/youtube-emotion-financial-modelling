@@ -7,6 +7,8 @@ Includes:
 - Bootstrap confidence intervals for coefficients
 - Permutation importance
 - Multiple testing correction (FDR)
+- Volatility clustering diagnostics (ACF, Ljung-Box)
+- Overfitting diagnostics (Information Coefficient)
 """
 
 import numpy as np
@@ -15,6 +17,8 @@ from typing import Dict, List, Tuple, Optional, Union
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.pipeline import Pipeline
 from scipy import stats
+from statsmodels.tsa.stattools import acf
+from statsmodels.stats.diagnostic import acorr_ljungbox
 
 
 # =============================================================================
@@ -25,6 +29,8 @@ def compute_all_metrics(
     y_true: np.ndarray, 
     y_pred: np.ndarray,
     prefix: str = "",
+    include_clustering: bool = False,
+    max_lags: int = 20,
 ) -> Dict[str, float]:
     """
     Compute comprehensive prediction metrics for volatility models.
@@ -33,9 +39,12 @@ def compute_all_metrics(
         y_true: Actual volatility values (absolute returns)
         y_pred: Predicted volatility values
         prefix: Optional prefix for metric keys (e.g., "train_", "test_")
+        include_clustering: If True, compute volatility clustering diagnostics on residuals
+        max_lags: Maximum lags for ACF analysis (default: 20)
     
     Returns:
         Dict with keys: mae, rmse, mape, r2
+        If include_clustering=True, also includes: acf_squared, ljung_box_stat, ljung_box_pvalue, persistence, half_life
         Note: Directional accuracy removed as it's not applicable for volatility prediction
     """
     y_true = np.asarray(y_true).flatten()
@@ -63,12 +72,44 @@ def compute_all_metrics(
     # R² score
     r2 = r2_score(y_true, y_pred) if len(y_true) > 1 else np.nan
     
-    return {
+    metrics = {
         f"{prefix}mae": float(mae),
         f"{prefix}rmse": float(rmse),
         f"{prefix}mape": float(mape),
         f"{prefix}r2": float(r2),
     }
+    
+    # Volatility clustering diagnostics on prediction errors
+    if include_clustering and len(y_true) > max_lags:
+        residuals = y_true - y_pred
+        squared_residuals = residuals ** 2
+        
+        # ACF of squared residuals
+        acf_values = acf(squared_residuals, nlags=max_lags, fft=False)
+        
+        # Ljung-Box test
+        lb_result = acorr_ljungbox(squared_residuals, lags=max_lags, return_df=False)
+        lb_stat = lb_result[0][-1]
+        lb_pvalue = lb_result[1][-1]
+        
+        # Persistence measure
+        n = len(residuals)
+        threshold = 1.96 / np.sqrt(n)
+        significant_acf = acf_values[1:][np.abs(acf_values[1:]) > threshold]
+        persistence = np.sum(significant_acf) if len(significant_acf) > 0 else 0.0
+        
+        # Half-life
+        half_life_idx = np.where(acf_values[1:] < 0.5)[0]
+        half_life = half_life_idx[0] + 1 if len(half_life_idx) > 0 else max_lags
+        
+        metrics.update({
+            f"{prefix}ljung_box_stat": float(lb_stat),
+            f"{prefix}ljung_box_pvalue": float(lb_pvalue),
+            f"{prefix}acf_persistence": float(persistence),
+            f"{prefix}acf_half_life": int(half_life),
+        })
+    
+    return metrics
 
 
 def get_significance_stars(
@@ -602,3 +643,55 @@ def rolling_window_forecast(
         train_end += step
     
     return np.array(predictions), np.array(actuals), fold_metrics
+
+
+# =============================================================================
+# Overfitting Diagnostics
+# =============================================================================
+
+def compute_prediction_quality(
+    predictions: np.ndarray,
+    actuals: np.ndarray,
+    dates: Optional[pd.DatetimeIndex] = None,
+    rolling_window: int = 60,
+) -> Dict[str, float]:
+    """
+    Compute Information Coefficient (IC) and stability metrics.
+    
+    Args:
+        predictions: Model predictions
+        actuals: Actual values
+        dates: Dates for rolling analysis (optional)
+        rolling_window: Window size for rolling IC (default: 60)
+    
+    Returns:
+        Dict with IC, ic_mean, ic_std, ic_stability, rolling_ic series
+    """
+    # Overall Information Coefficient (Spearman correlation)
+    ic, _ = stats.spearmanr(predictions, actuals)
+    
+    # Rolling IC
+    if dates is not None and len(dates) == len(predictions):
+        df = pd.DataFrame({'pred': predictions, 'actual': actuals}, index=dates)
+        rolling_ic = df.rolling(rolling_window).apply(
+            lambda x: stats.spearmanr(x['pred'], x['actual'])[0] if len(x) >= 10 else np.nan,
+            raw=False
+        )['pred']
+        
+        ic_mean = rolling_ic.mean()
+        ic_std = rolling_ic.std()
+        ic_stability = ic_mean / ic_std if ic_std > 0 else 0.0
+    else:
+        rolling_ic = None
+        ic_mean = ic
+        ic_std = 0.0
+        ic_stability = 0.0
+    
+    return {
+        'information_coefficient': float(ic),
+        'ic_mean': float(ic_mean),
+        'ic_std': float(ic_std),
+        'ic_stability': float(ic_stability),
+        'rolling_ic': rolling_ic,
+    }
+
