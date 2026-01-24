@@ -620,3 +620,378 @@ def plot_indices(
     
     # Show plot
     plt.show()
+
+def plot_indices_with_returns(
+    df: pd.DataFrame,
+    index_type: str = 'epi',
+    include_variants: list = None,
+    figsize: tuple = (20, 15),
+    ylim_indices: tuple = None,
+    add_events: bool = True,
+    returns_cols: list = ['r_btc', 'r_gold', 'r_spx'],
+):
+    """
+    Plot indices over time with asset returns on dual y-axes.
+    Creates a 3x1 subplot for each asset (Bitcoin, Gold, S&P 500).
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame containing the index data and returns. Can have 'date' column or datetime index
+    index_type : str
+        Type of index to plot. Options: 'ei', 'epi', 'epi_signed', 'ccd', 
+        'intensity', 'surprise', 'split'
+    include_variants : list, optional
+        Specific column names to plot. If None, plots all variants of the index_type
+    figsize : tuple
+        Figure size (width, height)
+    ylim_indices : tuple, optional
+        Y-axis limits for indices (min, max). If None, auto-scales
+    add_events : bool
+        Whether to add event annotations and shading
+    returns_cols : list
+        List of return column names [btc, gold, spx]
+    """
+    
+    df1 = deepcopy(df)
+    
+    # Handle date column - convert to column if index
+    if 'date' not in df1.columns:
+        if isinstance(df1.index, pd.DatetimeIndex):
+            df1 = df1.reset_index()
+            # Rename the index column to 'date' regardless of its original name
+            index_col = df1.columns[0]  # First column after reset_index is the old index
+            if index_col != 'date':
+                df1.rename(columns={index_col: 'date'}, inplace=True)
+        else:
+            raise ValueError("DataFrame must have 'date' column or DatetimeIndex")
+    
+    # Convert 'date' column to datetime format
+    df1["date"] = pd.to_datetime(df1["date"])
+    df1 = df1[df1["date"].dt.date >= filter_date]
+    
+    # Validate returns columns
+    asset_info = []
+    for i, ret_col in enumerate(returns_cols):
+        if ret_col not in df1.columns:
+            print(f"Warning: Return column '{ret_col}' not found in DataFrame, skipping")
+            continue
+        
+        # Map column names to asset labels
+        if 'btc' in ret_col.lower():
+            label = 'Bitcoin'
+        elif 'gold' in ret_col.lower():
+            label = 'Gold'
+        elif 'spx' in ret_col.lower():
+            label = 'S&P 500'
+        else:
+            label = ret_col
+        
+        asset_info.append({'col': ret_col, 'label': label})
+    
+    if not asset_info:
+        raise ValueError("No valid return columns found in DataFrame")
+    
+    plt.rcParams.update({"font.size": 20})
+    
+    # Create figure with 3 subplots
+    n_assets = len(asset_info)
+    fig, axes = plt.subplots(n_assets, 1, figsize=figsize, sharex=True)
+    
+    # Ensure axes is always a list
+    if n_assets == 1:
+        axes = [axes]
+    
+    # Define index configurations (same as plot_indices)
+    index_configs = {
+        'ei': {
+            'columns': ['ei_creator', 'ei_community', 'ei_creator_engweighted', 'ei_creator_topicweighted', 'ei_community_topicweighted'],
+            'colors': ['#023047', '#219EBC', '#126782', '#023047', '#219EBC'],
+            'linestyles': ['-', '-', '-.', '--', '--'],
+            'linewidths': [4, 4, 2, 3, 3],
+            'labels': ['Creator EI', 'Community EI', 'Creator EI (Eng. Weighted)', 'Creator EI (Topic Weighted)', 'Community EI (Topic Weighted)'],
+            'ylim': (-1, 1),
+            'ylabel': 'Emotion Index'
+        },
+        'epi': {
+            'columns': ['epi', 'epi_engweighted', 'epi_topicweighted', 'epi_engweighted_topicweighted'],
+            'colors': ['#B62B2B', '#D42929', '#F04242', '#FF8787'],
+            'linestyles': ['-', '-', '--', '--'],
+            'linewidths': [4, 3, 2, 2],
+            'labels': ['EPI', 'EPI (Eng. Weighted)', 'EPI (Topic Weighted)', 'EPI (Both Weighted)'],
+            'ylim': (0, 1),
+            'ylabel': 'Emotion Polarity Index'
+        },
+        'epi_signed': {
+            'columns': ['epi_signed', 'epi_signed_engweighted', 'epi_signed_topicweighted', 'epi_signed_engweighted_topicweighted'],
+            'colors': ['#B62B2B', '#D42929', '#F04242', '#FF8787'],
+            'linestyles': ['-', '-', '--', '--'],
+            'linewidths': [4, 3, 2, 2],
+            'labels': ['EPI Signed', 'EPI Signed (Eng. Weighted)', 'EPI Signed (Topic Weighted)', 'EPI Signed (Both Weighted)'],
+            'ylim': (-1, 1),
+            'ylabel': 'Signed Emotion Polarity Index'
+        },
+        'ccd': {
+            'columns': ['ccd', 'ccd_engweighted', 'ccd_topicweighted', 'ccd_engweighted_topicweighted'],
+            'colors': ['#FB8500', '#F4A259', '#FAA307', '#FFD60A'],
+            'linestyles': ['-', '-', '--', '--'],
+            'linewidths': [4, 3, 2, 2],
+            'labels': ['CCD', 'CCD (Eng. Weighted)', 'CCD (Topic Weighted)', 'CCD (Both Weighted)'],
+            'ylim': (0, 1),
+            'ylabel': 'Creator-Community Divergence'
+        },
+        'intensity': {
+            'columns': ['intensity', 'intensity_engweighted', 'intensity_topicweighted', 'intensity_engweighted_topicweighted'],
+            'colors': ['#126782', '#219EBC', '#126782', '#219EBC'],
+            'linestyles': ['-', '-', '--', '--'],
+            'linewidths': [4, 3, 2, 2],
+            'labels': ['Intensity', 'Intensity (Eng. Weighted)', 'Intensity (Topic Weighted)', 'Intensity (Both Weighted)'],
+            'ylim': (0, 1),
+            'ylabel': 'Emotional Intensity'
+        },
+        'surprise': {
+            'columns': ['surprise', 'surprise_engweighted', 'surprise_topicweighted', 'surprise_engweighted_topicweighted'],
+            'colors': ['#DAA520', '#FFB703', '#F4A259', '#FF8787'],
+            'linestyles': ['-', '-', '--', '--'],
+            'linewidths': [4, 3, 2, 2],
+            'labels': ['Surprise', 'Surprise (Eng. Weighted)', 'Surprise (Topic Weighted)', 'Surprise (Both Weighted)'],
+            'ylim': (0, 1),
+            'ylabel': 'Surprise Index (Informational Novelty)'
+        },
+        'split': {
+            'columns': ['split'],
+            'colors': ['#8D99AE'],
+            'linestyles': ['-'],
+            'linewidths': [4],
+            'labels': ['Split Index'],
+            'ylim': (0, 1),
+            'ylabel': 'Split Index (Within-Community Polarization)'
+        }
+    }
+    
+    # Get configuration for selected index type
+    if index_type not in index_configs:
+        raise ValueError(f"Invalid index_type. Choose from: {list(index_configs.keys())}")
+    
+    config = index_configs[index_type]
+    
+    # Determine which columns to plot
+    if include_variants:
+        columns_to_plot = [col for col in include_variants if col in df1.columns]
+        # Find corresponding indices for colors, linestyles, etc.
+        plot_indices_list = [config['columns'].index(col) if col in config['columns'] else 0 
+                             for col in columns_to_plot]
+        colors = [config['colors'][i] for i in plot_indices_list]
+        linestyles = [config['linestyles'][i] for i in plot_indices_list]
+        linewidths = [config['linewidths'][i] for i in plot_indices_list]
+        labels = [config['labels'][config['columns'].index(col)] if col in config['columns'] 
+                  else col for col in columns_to_plot]
+    else:
+        columns_to_plot = [col for col in config['columns'] if col in df1.columns]
+        colors = config['colors'][:len(columns_to_plot)]
+        linestyles = config['linestyles'][:len(columns_to_plot)]
+        linewidths = config['linewidths'][:len(columns_to_plot)]
+        labels = config['labels'][:len(columns_to_plot)]
+    
+    # Calculate y-axis limits for indices based on actual data
+    data_max = df1[columns_to_plot].max().max()
+    data_min = df1[columns_to_plot].min().min()
+    
+    # Set y-axis limits for indices
+    if ylim_indices:
+        indices_ylim = ylim_indices
+    else:
+        # Use data-driven limits with some padding
+        y_range = data_max - data_min
+        y_padding = y_range * 0.2  # 20% padding
+        ul_padding = min(data_max + y_padding, 1.04)
+        indices_ylim = (data_min - (y_padding/10), ul_padding)
+    
+    # Plot each asset in separate subplot
+    twin_axes = []  # Store secondary axes for legend collection
+    for idx, (ax, asset) in enumerate(zip(axes, asset_info)):
+        # Create secondary y-axis for indices
+        ax2 = ax.twinx()
+        twin_axes.append(ax2)
+        
+        # Plot returns on primary y-axis
+        ax.plot(
+            df1["date"],
+            df1[asset['col']],
+            linestyle='-',
+            color='black',
+            label='Asset Return',
+            linewidth=5,
+        )
+        
+        # Plot indices on secondary y-axis
+        for col, color, linestyle, linewidth, label in zip(columns_to_plot, colors, linestyles, linewidths, labels):
+            ax2.plot(
+                df1["date"],
+                df1[col],
+                linestyle=linestyle,
+                color=color,
+                label=label,
+                linewidth=linewidth,
+            )
+        
+        # Calculate y-axis limits for returns based on actual data
+        ret_data = df1[asset['col']].dropna()
+        ret_max = ret_data.max()
+        ret_min = ret_data.min()
+        ret_range = ret_max - ret_min
+        ret_padding = ret_range * 0.2  # 20% padding
+        ret_ul_padding = min(ret_max + ret_padding, 1.04)
+        ret_ylim = (ret_min - (ret_padding/10), ret_ul_padding)
+        
+        # Set y-axis limits (swapped - asset on primary, indices on secondary)
+        ax.set_ylim(ret_ylim)
+        ax2.set_ylim(indices_ylim)
+        
+        # Set labels (swapped)
+        ax.set_ylabel(asset['label'])  # Asset name as primary y-axis label
+        # Only show secondary y-axis label on middle subplot
+        if idx == 1:
+            ax2.set_ylabel(config['ylabel'])
+        
+        # Add event shading if requested (no text inside plots)
+        if add_events:
+            # Initial Tariff Announcements (20 Jan - 26 Jan)
+            ax.axvspan(
+                pd.to_datetime("2025-01-20"),
+                pd.to_datetime("2025-01-26"),
+                color="gray",
+                alpha=0.3,
+            )
+            
+            # Tariffs Postponed (04 Mar - 06 Mar)
+            ax.axvspan(
+                pd.to_datetime("2025-03-04"),
+                pd.to_datetime("2025-03-06"),
+                color="gray",
+                alpha=0.3,
+            )
+            
+            # China Retaliation & US Tariffs Imposed (10 Mar - 13 Mar)
+            ax.axvspan(
+                pd.to_datetime("2025-03-10"),
+                pd.to_datetime("2025-03-13"),
+                color="gray",
+                alpha=0.3,
+            )
+            
+            # Global Tariffs & China Retaliation (2 Apr - 6 Apr)
+            ax.axvspan(
+                pd.to_datetime("2025-04-02"),
+                pd.to_datetime("2025-04-06"),
+                color="gray",
+                alpha=0.3,
+            )
+            
+            # US-China Tariff Threats (9 Apr - 12 Apr)
+            ax.axvspan(
+                pd.to_datetime("2025-04-09"),
+                pd.to_datetime("2025-04-12"),
+                color="gray",
+                alpha=0.3,
+            )
+            
+            # Tariffs Relaxed (27 Apr - 04 May)
+            ax.axvspan(
+                pd.to_datetime("2025-04-27"),
+                pd.to_datetime("2025-05-04"),
+                color="gray",
+                alpha=0.3,
+            )
+            
+            # Trade Deals & Tariff Rollbacks (05 May - 14 May)
+            ax.axvspan(
+                pd.to_datetime("2025-05-05"),
+                pd.to_datetime("2025-05-14"),
+                color="gray",
+                alpha=0.3,
+            )
+            
+            # Non-US Apple Tariff Threat (20 May - 25 May)
+            ax.axvspan(
+                pd.to_datetime("2025-05-20"),
+                pd.to_datetime("2025-05-25"),
+                color="gray",
+                alpha=0.3,
+            )
+    
+    # Add event text annotations above plots if requested
+    if add_events:
+        # Get date range for positioning
+        date_min = df1["date"].min()
+        date_max = df1["date"].max()
+        date_range = (date_max - date_min).days
+        
+        # Helper function to convert date to figure x-coordinate
+        def date_to_fig_x(date):
+            date_pd = pd.to_datetime(date)
+            days_from_start = (date_pd - date_min).days
+            # Map to figure coordinates (0.125 to 0.9 typically for plot area)
+            return 0.125 + (days_from_start / date_range) * 0.775
+        
+        # Y position for text (above plots)
+        text_y = 0.97
+        
+        # Add event labels
+        fig.text(date_to_fig_x("2025-01-23"), text_y, "Initial Tariff\nAnnouncements", 
+                ha="center", va="top", fontsize=18, color="black")
+        fig.text(date_to_fig_x("2025-02-24"), text_y, "Tariffs\nPostponed", 
+                ha="center", va="top", fontsize=18, color="black")
+        fig.text(date_to_fig_x("2025-03-10"), 0.9894, "China\nRetaliation\n& US Tariffs", 
+                ha="center", va="top", fontsize=18, color="black")
+        fig.text(date_to_fig_x("2025-03-29"), 1.006, "Global\nTariffs &\nChina\nRetaliation", 
+                ha="center", va="top", fontsize=18, color="black")
+        fig.text(date_to_fig_x("2025-04-13"), text_y, "US-China\nTariff Threats", 
+                ha="center", va="top", fontsize=18, color="black")
+        fig.text(date_to_fig_x("2025-04-28"), text_y, "Tariffs\nRelaxed", 
+                ha="center", va="top", fontsize=18, color="black")
+        fig.text(date_to_fig_x("2025-05-10"), 1.006, "Trade\nDeals &\nTariff\nRollbacks", 
+                ha="center", va="top", fontsize=18, color="black")
+        fig.text(date_to_fig_x("2025-05-23"), text_y, "Apple Tariff\nThreat", 
+                ha="center", va="top", fontsize=18, color="black")
+    
+    # Formatting x-axis (only for bottom subplot)
+    week_start_dates = (
+        df1["date"].dt.to_period("W").drop_duplicates().dt.start_time
+    )
+    axes[-1].set_xticks(week_start_dates)
+    axes[-1].set_xticklabels(week_start_dates.dt.strftime("%d-%b"))
+    
+    # Rotate x-axis labels
+    plt.setp(axes[-1].xaxis.get_majorticklabels(), rotation=45)
+    
+    # Collect all legend handles and labels
+    all_handles = []
+    all_labels = []
+    
+    # Get return handle from first primary axis (only one "Asset Return" label)
+    lines1, labels1 = axes[0].get_legend_handles_labels()
+    if lines1:
+        all_handles.append(lines1[0])
+        all_labels.append(labels1[0])
+    
+    # Get index handles from first secondary axis
+    lines2, labels2 = twin_axes[0].get_legend_handles_labels()
+    all_handles.extend(lines2)
+    all_labels.extend(labels2)
+    
+    # Add combined legend at bottom
+    fig.legend(
+        all_handles,
+        all_labels,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.07),
+        ncol=min(len(all_labels), 5),
+        fontsize=18,
+    )
+    
+    # Adjust layout (more space at top for event labels, normal space at bottom)
+    plt.tight_layout(rect=[0, 0.1, 1, 0.95])
+    
+    # Show plot
+    plt.show()
