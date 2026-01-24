@@ -27,15 +27,16 @@ def compute_all_metrics(
     prefix: str = "",
 ) -> Dict[str, float]:
     """
-    Compute comprehensive prediction metrics.
+    Compute comprehensive prediction metrics for volatility models.
     
     Args:
-        y_true: Actual values
-        y_pred: Predicted values
+        y_true: Actual volatility values (absolute returns)
+        y_pred: Predicted volatility values
         prefix: Optional prefix for metric keys (e.g., "train_", "test_")
     
     Returns:
-        Dict with keys: mae, rmse, mape, r2, dir_acc (directional accuracy %)
+        Dict with keys: mae, rmse, mape, r2
+        Note: Directional accuracy removed as it's not applicable for volatility prediction
     """
     y_true = np.asarray(y_true).flatten()
     y_pred = np.asarray(y_pred).flatten()
@@ -47,8 +48,7 @@ def compute_all_metrics(
     
     if len(y_true) == 0:
         return {f"{prefix}mae": np.nan, f"{prefix}rmse": np.nan, 
-                f"{prefix}mape": np.nan, f"{prefix}r2": np.nan, 
-                f"{prefix}dir_acc": np.nan}
+                f"{prefix}mape": np.nan, f"{prefix}r2": np.nan}
     
     mae = mean_absolute_error(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
@@ -63,19 +63,11 @@ def compute_all_metrics(
     # R² score
     r2 = r2_score(y_true, y_pred) if len(y_true) > 1 else np.nan
     
-    # Directional accuracy (exclude zero returns)
-    dir_mask = y_true != 0
-    if dir_mask.sum() > 0:
-        dir_acc = np.mean(np.sign(y_true[dir_mask]) == np.sign(y_pred[dir_mask])) * 100
-    else:
-        dir_acc = 50.0
-    
     return {
         f"{prefix}mae": float(mae),
         f"{prefix}rmse": float(rmse),
         f"{prefix}mape": float(mape),
         f"{prefix}r2": float(r2),
-        f"{prefix}dir_acc": float(dir_acc),
     }
 
 

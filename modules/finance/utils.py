@@ -43,14 +43,15 @@ def normalize_best_models(
 
 def compute_metrics(actuals: np.ndarray, preds: np.ndarray) -> Dict[str, float]:
     """
-    Compute prediction metrics: RMSE, MAE, and directional accuracy.
+    Compute prediction metrics for volatility models: RMSE and MAE.
     
     Args:
-        actuals: Array of actual values
-        preds: Array of predicted values
+        actuals: Array of actual volatility values (absolute returns)
+        preds: Array of predicted volatility values
     
     Returns:
-        Dict with 'rmse', 'mae', and 'dir_acc' (as percentage)
+        Dict with 'rmse' and 'mae'
+        Note: Directional accuracy removed as it's not applicable for volatility prediction
     """
     actuals = np.asarray(actuals)
     preds = np.asarray(preds)
@@ -58,11 +59,4 @@ def compute_metrics(actuals: np.ndarray, preds: np.ndarray) -> Dict[str, float]:
     rmse = np.sqrt(mean_squared_error(actuals, preds))
     mae = mean_absolute_error(actuals, preds)
     
-    # Directional accuracy: exclude zero returns
-    mask = actuals != 0
-    if mask.sum() > 0:
-        dir_acc = np.mean(np.sign(actuals[mask]) == np.sign(preds[mask])) * 100
-    else:
-        dir_acc = 50.0
-    
-    return {"rmse": rmse, "mae": mae, "dir_acc": dir_acc}
+    return {"rmse": rmse, "mae": mae}
