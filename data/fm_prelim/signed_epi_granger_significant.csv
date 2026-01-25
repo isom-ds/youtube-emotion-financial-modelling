@@ -1,0 +1,5 @@
+index,r_btc,r_gold,r_spx
+epi_signed,0,0,1
+epi_signed_engweighted,0,0,1
+epi_signed_engweighted_topicweighted,0,0,0
+epi_signed_topicweighted,0,0,0
