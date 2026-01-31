@@ -413,7 +413,7 @@ def automl_group_arx(
     initial_train_size: int = 60,
     step_size: int = 1,
     test_size: int = 1,
-    n_trials: int = 500,
+    n_trials: int = 10_000,
     random_seed: int = 42,
     p_range: Tuple[int, int] = (1, 7),
     q_controls_range: Tuple[int, int] = (0, 3),
@@ -440,6 +440,7 @@ def automl_group_arx(
     include_lag0_cross: bool = False,
     use_pruning: bool = True,
     cv_metric: str = "both",  # "mae", "rmse", or "both" (returns both, optimizes on mae)
+    n_early_stop: int = 500,  # Stop if no improvement after n consecutive trials
     # Deprecated parameter for backward compatibility
     q_social_range: Optional[Tuple[int, int]] = None,
 ):
@@ -468,7 +469,7 @@ def automl_group_arx(
         initial_train_size: Initial training window size
         step_size: Step size for rolling window
         test_size: Test set size per fold
-        n_trials: Number of Optuna trials (default 500 to handle expanded search space)
+        n_trials: Number of Optuna trials (default 10,000 for comprehensive search)
         random_seed: Random seed for reproducibility
         p_range: AR lag order range
         q_controls_range: Control variable lag range
@@ -594,13 +595,35 @@ def automl_group_arx(
     # Suppress Optuna logging
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     
-    # Add progress bar
+    # Add progress bar and early stopping
     with tqdm(total=n_trials, desc="Optuna Optimization") as pbar:
         def callback(study, trial):
             pbar.update(1)
-            pbar.set_postfix({"best_mae": study.best_value})
+            pbar.set_postfix({"best_mae": study.best_value, "trials_since_improvement": trial.number - study.best_trial.number})
         
-        study.optimize(objective, n_trials=n_trials, callbacks=[callback], show_progress_bar=False)
+        # Early stopping: stop if no improvement after n_early_stop trials
+        callbacks = [callback]
+        if n_early_stop > 0:
+            # Custom early stopping based on best value not improving
+            class EarlyStoppingCallback:
+                def __init__(self, patience: int):
+                    self.patience = patience
+                    self.best_value = float('inf')
+                    self.trials_without_improvement = 0
+                
+                def __call__(self, study, trial):
+                    if study.best_value < self.best_value:
+                        self.best_value = study.best_value
+                        self.trials_without_improvement = 0
+                    else:
+                        self.trials_without_improvement += 1
+                    
+                    if self.trials_without_improvement >= self.patience:
+                        study.stop()
+            
+            callbacks.append(EarlyStoppingCallback(n_early_stop))
+        
+        study.optimize(objective, n_trials=n_trials, callbacks=callbacks, show_progress_bar=False)
 
     # Extract best parameters
     best = study.best_params.copy()
@@ -750,7 +773,7 @@ def run_three_assets_on_returns(
             initial_train_size=60,
             step_size=1,
             test_size=1,
-            n_trials=300,
+            n_trials=10_000,
             model_family="elasticnet",
             use_pruning=True,
             # key paper-safe timing choices:
