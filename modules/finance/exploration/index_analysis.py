@@ -277,89 +277,132 @@ def granger_comparison_variants(
     variants: List[str],
     asset_cols: List[str],
     maxlag: int = 10,
+    maxlead: int = 10,
     ic: str = 'aic',
     alpha: float = 0.05,
     correction_method: str = 'fdr_bh'
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Run Granger causality tests for all variants and compare results.
+    Tests both lags and leads.
     
     Args:
         df: DataFrame with indices and assets
         variants: List of index variants to test
         asset_cols: List of asset return columns
-        maxlag: Maximum lag for Granger test
+        maxlag: Maximum lag for Granger test (default 10)
+        maxlead: Maximum lead for Granger test (default 10)
         ic: 'aic' or 'bic' for lag selection
         alpha: Significance level
         correction_method: Multiple testing correction method
     
     Returns:
-        Tuple of (pvalue_matrix, pvalue_corrected_matrix, significance_matrix)
+        Tuple of 6 DataFrames:
+            - lag_pvalue_matrix
+            - lag_pvalue_corrected_matrix
+            - lag_significance_matrix
+            - lead_pvalue_matrix
+            - lead_pvalue_corrected_matrix
+            - lead_significance_matrix
     """
     available_variants = [v for v in variants if v in df.columns]
     available_assets = [a for a in asset_cols if a in df.columns]
     
     if not available_variants or not available_assets:
         print(f"Warning: Insufficient data for Granger tests")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        empty = pd.DataFrame()
+        return empty, empty, empty, empty, empty, empty
     
     print(f"\n{'='*70}")
     print(f"GRANGER CAUSALITY TESTS: {available_variants[0].split('_')[0].upper()} Variants")
     print(f"{'='*70}")
     
-    pval_mat, pval_corrected, sig_mat = granger_causality_matrix(
-        df, available_variants, available_assets, maxlag=maxlag, ic=ic,
+    results = granger_causality_matrix(
+        df, available_variants, available_assets, maxlag=maxlag, maxlead=maxlead, ic=ic,
         alpha=alpha, correction_method=correction_method
     )
     
+    lag_pval, lag_corrected, lag_sig, lead_pval, lead_corrected, lead_sig = results
+    
+    print(f"\n{'='*70}")
+    print("LAG RESULTS: X(t-k) → Y(t)")
+    print(f"{'='*70}")
     print(f"\nP-values (at optimal lag):")
-    display(pval_mat)
+    display(lag_pval)
     
     print(f"\nCorrected p-values ({correction_method}):")
-    display(pval_corrected)
+    display(lag_corrected)
     
     print(f"\nSignificant relationships (α={alpha}, corrected):")
-    display(sig_mat)
+    display(lag_sig)
+    
+    print(f"\n{'='*70}")
+    print("LEAD RESULTS: X(t) → Y(t+k)")
+    print(f"{'='*70}")
+    print(f"\nP-values (at optimal lead):")
+    display(lead_pval)
+    
+    print(f"\nCorrected p-values ({correction_method}):")
+    display(lead_corrected)
+    
+    print(f"\nSignificant relationships (α={alpha}, corrected):")
+    display(lead_sig)
     
     # Visualization
-    plot_granger_matrix(pval_corrected, sig_mat, 
-                       title=f"Granger: {available_variants[0].split('_')[0].upper()} → Assets")
+    plot_granger_matrix(lag_corrected, lag_sig,
+                       title=f"Granger: {available_variants[0].split('_')[0].upper()} → Assets",
+                       lead_pvalue_matrix=lead_corrected,
+                       lead_significance_matrix=lead_sig)
     
-    return pval_mat, pval_corrected, sig_mat
+    return lag_pval, lag_corrected, lag_sig, lead_pval, lead_corrected, lead_sig
 
 
 def summarize_variant_performance(
-    pvalue_matrix: pd.DataFrame,
-    significance_matrix: pd.DataFrame,
+    lag_pvalue_matrix: pd.DataFrame,
+    lag_significance_matrix: pd.DataFrame,
+    lead_pvalue_matrix: pd.DataFrame,
+    lead_significance_matrix: pd.DataFrame,
     variants: List[str]
 ) -> pd.DataFrame:
     """
-    Summarize which variants perform best in Granger tests.
+    Summarize which variants perform best in Granger tests (both lags and leads).
     
     Args:
-        pvalue_matrix: P-values from Granger tests
-        significance_matrix: Significance indicators
+        lag_pvalue_matrix: P-values from lag Granger tests
+        lag_significance_matrix: Significance indicators for lags
+        lead_pvalue_matrix: P-values from lead Granger tests
+        lead_significance_matrix: Significance indicators for leads
         variants: List of variant names
     
     Returns:
-        DataFrame ranking variants by performance
+        DataFrame ranking variants by performance (sorted by total significant)
     """
     summary = []
     
     for var in variants:
-        if var in significance_matrix.index:
-            n_significant = significance_matrix.loc[var].sum()
-            mean_pvalue = pvalue_matrix.loc[var].mean()
-            min_pvalue = pvalue_matrix.loc[var].min()
+        if var in lag_significance_matrix.index:
+            # Lag performance
+            n_sig_lag = lag_significance_matrix.loc[var].sum()
+            mean_pval_lag = lag_pvalue_matrix.loc[var].mean()
+            min_pval_lag = lag_pvalue_matrix.loc[var].min()
+            
+            # Lead performance
+            n_sig_lead = lead_significance_matrix.loc[var].sum() if var in lead_significance_matrix.index else 0
+            mean_pval_lead = lead_pvalue_matrix.loc[var].mean() if var in lead_pvalue_matrix.index else np.nan
+            min_pval_lead = lead_pvalue_matrix.loc[var].min() if var in lead_pvalue_matrix.index else np.nan
             
             summary.append({
                 'variant': var,
-                'n_significant': n_significant,
-                'mean_pvalue': mean_pvalue,
-                'min_pvalue': min_pvalue
+                'n_significant_lags': n_sig_lag,
+                'mean_pvalue_lags': mean_pval_lag,
+                'min_pvalue_lags': min_pval_lag,
+                'n_significant_leads': n_sig_lead,
+                'mean_pvalue_leads': mean_pval_lead,
+                'min_pvalue_leads': min_pval_lead,
+                'total_significant': n_sig_lag + n_sig_lead
             })
     
-    summary_df = pd.DataFrame(summary).sort_values('n_significant', ascending=False)
+    summary_df = pd.DataFrame(summary).sort_values('total_significant', ascending=False)
     
     print(f"\n{'='*70}")
     print("VARIANT PERFORMANCE SUMMARY")

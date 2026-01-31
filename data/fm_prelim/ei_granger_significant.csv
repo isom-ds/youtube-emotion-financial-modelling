@@ -1,6 +1,6 @@
-index,r_btc,r_gold,r_spx
-ei_community,0,0,0
-ei_community_topicweighted,0,0,0
-ei_creator,0,0,0
-ei_creator_engweighted,0,0,0
-ei_creator_topicweighted,0,0,0
+index,r_aapl,r_btc,r_gold,r_spx,r_spx_auto,r_spx_elec,r_spx_mach,r_spx_oilgas
+ei_community,0,0,0,0,0,0,0,0
+ei_community_topicweighted,0,0,0,0,0,0,0,0
+ei_creator,0,0,0,0,0,0,0,0
+ei_creator_engweighted,0,0,0,0,0,0,0,0
+ei_creator_topicweighted,0,0,0,0,0,0,0,0

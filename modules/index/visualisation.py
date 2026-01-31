@@ -625,10 +625,10 @@ def plot_indices_with_returns(
     df: pd.DataFrame,
     index_type: str = 'epi',
     include_variants: list = None,
-    figsize: tuple = (20, 15),
+    figsize: tuple = (20, 20),
     ylim_indices: tuple = None,
     add_events: bool = True,
-    returns_cols: list = ['r_btc', 'r_gold', 'r_spx'],
+    returns_cols: list = ['r_btc', 'r_gold', 'r_spx', 'r_spx_auto', 'r_spx_oilgas', 'r_spx_mach', 'r_spx_elec', 'r_aapl'],
 ):
     """
     Plot indices over time with asset returns on dual y-axes.
@@ -650,7 +650,7 @@ def plot_indices_with_returns(
     add_events : bool
         Whether to add event annotations and shading
     returns_cols : list
-        List of return column names [btc, gold, spx]
+        List of return column names [btc, gold, spx, spx_auto, spx_oilgas, spx_mach, spx_elec, aapl]
     """
     
     df1 = deepcopy(df)
@@ -682,8 +682,18 @@ def plot_indices_with_returns(
             label = 'Bitcoin'
         elif 'gold' in ret_col.lower():
             label = 'Gold'
+        elif 'spx_auto' in ret_col.lower():
+            label = 'Automobiles'
+        elif 'spx_oilgas' in ret_col.lower():
+            label = 'Oil & Gas'
+        elif 'spx_mach' in ret_col.lower():
+            label = 'Machinery'
+        elif 'spx_elec' in ret_col.lower():
+            label = 'Electronics'
         elif 'spx' in ret_col.lower():
             label = 'S&P 500'
+        elif 'aapl' in ret_col.lower():
+            label = 'Apple Inc.'
         else:
             label = ret_col
         

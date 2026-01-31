@@ -1,5 +1,5 @@
-index,r_btc,r_gold,r_spx
-surprise,0,0,0
-surprise_engweighted,0,0,0
-surprise_engweighted_topicweighted,0,0,0
-surprise_topicweighted,0,0,0
+index,r_aapl,r_btc,r_gold,r_spx,r_spx_auto,r_spx_elec,r_spx_mach,r_spx_oilgas
+surprise,0,0,0,0,0,0,0,0
+surprise_engweighted,0,0,0,0,0,0,0,0
+surprise_engweighted_topicweighted,0,0,0,0,0,0,0,0
+surprise_topicweighted,0,0,0,0,0,0,0,0
