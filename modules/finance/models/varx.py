@@ -1,3 +1,29 @@
+"""VARX Models with Lag and Lead Features.
+
+This module implements Vector AutoRegressive with eXogenous variables (VARX) models
+for multivariate financial return prediction, supporting both lag and lead features:
+
+**Lag Features (Past Values):**
+- X(t-k) → Y(t+1): Past values of X predict next-period returns
+- Standard causal interpretation: historical signals affect future outcomes
+
+**Lead Features (Future Values):**
+- X(t+k) → Y(t+1): Future values of X predict current returns
+- Interpretation:
+  * Anticipatory social signals (forward-looking discourse)
+  * Reverse causality (returns precede social media response)
+  * Common latent factors affecting both simultaneously
+  * IMPORTANT: Must verify that lead features are available at prediction time
+    to avoid lookahead bias in out-of-sample evaluation
+
+**Feature Scope:**
+- Leads are ONLY applied to emotion/social indices (ei, epi, ccd, etc.)
+- Controls remain lag-only to avoid simultaneity issues
+- Endogenous (AR) terms use lags only (past returns predict future returns)
+
+See VARXLagSpec dataclass for per-family lag and lead configuration.
+"""
+
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
@@ -54,10 +80,11 @@ def _classify_exog_columns(columns: List[str]) -> Tuple[Dict[str, List[str]], Li
 @dataclass
 class VARXLagSpec:
     """
-    Lag specification for VARX models with heterogeneous exogenous lags.
+    Lag and lead specification for VARX models with heterogeneous exogenous lags/leads.
     
-    Supports per-family lag orders for emotion indices while using a common
-    lag order for endogenous variables and control variables.
+    Supports per-family lag and lead orders for emotion indices while using a common
+    lag order for endogenous variables and control variables. Leads are only applicable
+    to emotion indices, not to endogenous or control variables.
     """
     p: int  # Endogenous (AR) lag order
     q_controls: int  # Control variable lag order
@@ -69,6 +96,14 @@ class VARXLagSpec:
     q_intensity: int = 0
     q_surprise: int = 0
     q_split: int = 0
+    # Per-family emotion index leads (heterogeneous) - NEW
+    f_ei: int = 0
+    f_epi: int = 0
+    f_epi_signed: int = 0
+    f_ccd: int = 0
+    f_intensity: int = 0
+    f_surprise: int = 0
+    f_split: int = 0
     # Backward compatibility
     q: Optional[int] = None
     
@@ -104,11 +139,31 @@ class VARXLagSpec:
         }
         return lag_map.get(family, 0)
     
+    def get_family_lead(self, family: str) -> int:
+        """Get lead order for a specific index family."""
+        lead_map = {
+            "ei": self.f_ei,
+            "epi": self.f_epi,
+            "epi_signed": self.f_epi_signed,
+            "ccd": self.f_ccd,
+            "intensity": self.f_intensity,
+            "surprise": self.f_surprise,
+            "split": self.f_split,
+        }
+        return lead_map.get(family, 0)
+    
     def max_exog_lag(self) -> int:
         """Get maximum exogenous lag order."""
         return max(
             self.q_controls, self.q_ei, self.q_epi, self.q_epi_signed,
             self.q_ccd, self.q_intensity, self.q_surprise, self.q_split
+        )
+    
+    def max_exog_lead(self) -> int:
+        """Get maximum exogenous lead order."""
+        return max(
+            self.f_ei, self.f_epi, self.f_epi_signed,
+            self.f_ccd, self.f_intensity, self.f_surprise, self.f_split
         )
 
 
@@ -148,15 +203,18 @@ def make_varx_design_heterogeneous(
     include_lag0_exog: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Build VARX design matrix with heterogeneous exogenous lags.
+    Build VARX design matrix with heterogeneous exogenous lags and leads.
     
     Y: (T, k) endogenous returns on trading-day index
     X: (T, m) exogenous features (emotion indices + controls)
-    lags: VARXLagSpec with per-family lag orders
+    lags: VARXLagSpec with per-family lag and lead orders
     include_lag0_exog: Whether to include contemporaneous exogenous (t) in prediction
     
+    Supports leads for emotion indices: X(t+k) → Y(t+1) for anticipatory signals.
+    Controls and endogenous variables remain lag-only.
+    
     Returns:
-        Z: Design matrix with lagged endogenous and exogenous features
+        Z: Design matrix with lagged endogenous and lagged/lead exogenous features
         Yt: Target matrix (returns at time t)
     """
     Z_parts = []
@@ -170,7 +228,7 @@ def make_varx_design_heterogeneous(
     # Classify exogenous columns
     classified, controls = _classify_exog_columns(list(X.columns))
     
-    # Add control variables with their lag order
+    # Add control variables with their lag order (lag-only, no leads)
     if controls and lags.q_controls >= 0:
         start_lag = 0 if include_lag0_exog else 1
         for j in range(start_lag, lags.q_controls + 1):
@@ -188,9 +246,31 @@ def make_varx_design_heterogeneous(
                     Xj = X[cols].shift(j)
                     Xj.columns = [f"{c}_xlag{j}" for c in cols]
                     Z_parts.append(Xj)
+    
+    # Add emotion index families with heterogeneous leads (NEW)
+    for family, cols in classified.items():
+        if cols:
+            family_lead = lags.get_family_lead(family)
+            if family_lead > 0:
+                for j in range(1, family_lead + 1):
+                    # Negative shift for leads: X(t+j)
+                    Xj = X[cols].shift(-j)
+                    Xj.columns = [f"{c}_xlead{j}" for c in cols]
+                    Z_parts.append(Xj)
 
     Z = pd.concat(Z_parts, axis=1)
     data = pd.concat([Z, Y], axis=1).dropna()
+    
+    # Validate minimum sample size after dropping NaN (from lags and leads)
+    min_samples = 100
+    if len(data) < min_samples:
+        import warnings
+        warnings.warn(
+            f"After creating lag/lead features and dropping NaN, only {len(data)} samples remain "
+            f"(minimum recommended: {min_samples}). Consider reducing lag/lead orders.",
+            UserWarning
+        )
+    
     Z = data[Z.columns]
     Yt = data[Y.columns]
     return Z, Yt
@@ -335,27 +415,36 @@ def automl_varx_optuna(
     initial_train: int = 60,
     step: int = 1,
     val_size: int = 1,
-    n_trials: int = 300,
+    n_trials: int = 500,
     random_seed: int = 42,
     p_range: Tuple[int, int] = (1, 7),
     q_controls_range: Tuple[int, int] = (0, 3),
     # Per-family emotion index lag ranges (heterogeneous)
-    q_ei_range: Tuple[int, int] = (0, 5),
-    q_epi_range: Tuple[int, int] = (0, 5),
-    q_epi_signed_range: Tuple[int, int] = (0, 5),
-    q_ccd_range: Tuple[int, int] = (0, 5),
-    q_intensity_range: Tuple[int, int] = (0, 5),
-    q_surprise_range: Tuple[int, int] = (0, 5),
-    q_split_range: Tuple[int, int] = (0, 5),
+    q_ei_range: Tuple[int, int] = (0, 3),
+    q_epi_range: Tuple[int, int] = (0, 3),
+    q_epi_signed_range: Tuple[int, int] = (0, 3),
+    q_ccd_range: Tuple[int, int] = (0, 3),
+    q_intensity_range: Tuple[int, int] = (0, 3),
+    q_surprise_range: Tuple[int, int] = (0, 3),
+    q_split_range: Tuple[int, int] = (0, 3),
+    # Per-family emotion index lead ranges (heterogeneous) - NEW
+    f_ei_range: Tuple[int, int] = (0, 3),
+    f_epi_range: Tuple[int, int] = (0, 3),
+    f_epi_signed_range: Tuple[int, int] = (0, 3),
+    f_ccd_range: Tuple[int, int] = (0, 3),
+    f_intensity_range: Tuple[int, int] = (0, 3),
+    f_surprise_range: Tuple[int, int] = (0, 3),
+    f_split_range: Tuple[int, int] = (0, 3),
     model_family: str = "mt_enet",  # "ridge" or "mt_enet"
     include_lag0_exog: bool = True,
     use_pruning: bool = True,
 ) -> Dict:
     """
-    Optuna-based hyperparameter search for VARX models with heterogeneous exogenous lags.
+    Optuna-based hyperparameter search for VARX models with heterogeneous exogenous lags and leads.
     
-    Supports per-family lag orders for 7 emotion index families while jointly
-    modeling all assets (cross-asset spillovers via endogenous lag matrices).
+    Supports per-family lag and lead orders for 7 emotion index families while jointly
+    modeling all assets (cross-asset spillovers via endogenous lag matrices). Leads are
+    ONLY applied to emotion indices to test for anticipatory signals.
     
     Args:
         Y: Endogenous return DataFrame (T, k) with assets as columns
@@ -363,20 +452,22 @@ def automl_varx_optuna(
         initial_train: Initial training window size
         step: Step size for rolling window
         val_size: Validation set size per fold
-        n_trials: Number of Optuna trials (default 300)
+        n_trials: Number of Optuna trials (default 500 to handle expanded search space)
         random_seed: Random seed for reproducibility
         p_range: Endogenous AR lag order range
         q_controls_range: Control variable lag range
         q_*_range: Per-family emotion index lag ranges
+        f_*_range: Per-family emotion index lead ranges (NEW)
         model_family: "ridge" or "mt_enet" (MultiTaskElasticNet)
         include_lag0_exog: Include contemporaneous exogenous features
         use_pruning: Use Optuna MedianPruner
     
     Returns:
-        Dict with best_score_mae, best_score_rmse, best_lags, best_model_params,
-        coef_matrix, fitted_pipeline, study, feature_names
+        Dict with best_score_mae, best_score_rmse, best_lags (including lead specs),
+        best_model_params, coef_matrix, fitted_pipeline, study, feature_names
     """
     import optuna
+    from tqdm.auto import tqdm
     
     def build_model(params: Dict):
         if model_family == "ridge":
@@ -394,6 +485,14 @@ def automl_varx_optuna(
             q_intensity=trial.suggest_int("q_intensity", *q_intensity_range),
             q_surprise=trial.suggest_int("q_surprise", *q_surprise_range),
             q_split=trial.suggest_int("q_split", *q_split_range),
+            # Lead parameters (NEW)
+            f_ei=trial.suggest_int("f_ei", *f_ei_range),
+            f_epi=trial.suggest_int("f_epi", *f_epi_range),
+            f_epi_signed=trial.suggest_int("f_epi_signed", *f_epi_signed_range),
+            f_ccd=trial.suggest_int("f_ccd", *f_ccd_range),
+            f_intensity=trial.suggest_int("f_intensity", *f_intensity_range),
+            f_surprise=trial.suggest_int("f_surprise", *f_surprise_range),
+            f_split=trial.suggest_int("f_split", *f_split_range),
         )
 
         if model_family == "ridge":
@@ -424,7 +523,14 @@ def automl_varx_optuna(
         study = optuna.create_study(direction="minimize", sampler=sampler)
     
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    
+    # Add progress bar
+    with tqdm(total=n_trials, desc="Optuna VARX Optimization") as pbar:
+        def callback(study, trial):
+            pbar.update(1)
+            pbar.set_postfix({"best_mae": study.best_value})
+        
+        study.optimize(objective, n_trials=n_trials, callbacks=[callback], show_progress_bar=False)
 
     # Extract best parameters
     best = study.best_params.copy()
@@ -438,6 +544,14 @@ def automl_varx_optuna(
         q_intensity=best.pop("q_intensity"),
         q_surprise=best.pop("q_surprise"),
         q_split=best.pop("q_split"),
+        # Lead parameters (NEW)
+        f_ei=best.pop("f_ei"),
+        f_epi=best.pop("f_epi"),
+        f_epi_signed=best.pop("f_epi_signed"),
+        f_ccd=best.pop("f_ccd"),
+        f_intensity=best.pop("f_intensity"),
+        f_surprise=best.pop("f_surprise"),
+        f_split=best.pop("f_split"),
     )
     best_params = best
 
