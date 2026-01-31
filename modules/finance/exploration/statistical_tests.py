@@ -193,6 +193,7 @@ def granger_causality_test(
     maxlag: int = 10,
     maxlead: int = 10,
     ic: str = 'aic',
+    alpha: float = 0.05,
     verbose: bool = False
 ) -> Dict:
     """
@@ -292,8 +293,8 @@ def granger_causality_test(
             'pvalues': pvalues,
             'ic_values': ic_values,
             'min_pvalue': min_pvalue,
-            'granger_causes': min_pvalue < 0.05,
-            'granger_causes_at_optimal_lag': pvalues[optimal_lag] < 0.05
+            'granger_causes': min_pvalue < alpha,
+            'granger_causes_at_optimal_lag': pvalues[optimal_lag] < alpha
         }
     
     except Exception as e:
@@ -345,7 +346,8 @@ def bidirectional_granger_test(
     col2: str,
     maxlag: int = 10,
     maxlead: int = 10,
-    ic: str = 'aic'
+    ic: str = 'aic',
+    alpha: float = 0.05
 ) -> pd.DataFrame:
     """
     Test Granger causality in both directions with both lags and leads.
@@ -357,14 +359,14 @@ def bidirectional_granger_test(
         maxlag: Maximum lag to test
         maxlead: Maximum lead to test
         ic: 'aic' or 'bic' for lag selection
-    
+        alpha: Significance level for hypothesis testing
     Returns:
         DataFrame with results for both directions and both types (lags + leads)
         If maxlead=0, returns 2 rows (backward compatible)
         If maxlead>0, returns 4 rows (2 directions × 2 types)
     """
-    result1 = granger_causality_test(df, col1, col2, maxlag=maxlag, maxlead=maxlead, ic=ic)
-    result2 = granger_causality_test(df, col2, col1, maxlag=maxlag, maxlead=maxlead, ic=ic)
+    result1 = granger_causality_test(df, col1, col2, maxlag=maxlag, maxlead=maxlead, ic=ic, alpha=alpha)
+    result2 = granger_causality_test(df, col2, col1, maxlag=maxlag, maxlead=maxlead, ic=ic, alpha=alpha)
     
     # Backward compatible: if maxlead=0, return old format
     if maxlead == 0:
