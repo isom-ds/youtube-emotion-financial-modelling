@@ -695,3 +695,233 @@ def compute_prediction_quality(
         'rolling_ic': rolling_ic,
     }
 
+
+# =============================================================================
+# Lead Feature Validation
+# =============================================================================
+
+def validate_lead_granger(
+    bootstrap_df: pd.DataFrame,
+    data_df: pd.DataFrame,
+    y_col: str,
+    maxlead: int = 3,
+    alpha: float = 0.05,
+    verbose: bool = False
+) -> pd.DataFrame:
+    """
+    Validate lead features using Granger causality tests.
+    
+    Extracts significant lead features from bootstrap results and tests whether
+    future index values statistically predict current returns using Granger tests.
+    
+    Args:
+        bootstrap_df: DataFrame with bootstrap results (must have 'sig_95' column or 'pvalue' < alpha)
+        data_df: DataFrame with time series data (index = dates, columns = features + target)
+        y_col: Name of target column in data_df
+        maxlead: Maximum lead order to test (default: 3)
+        alpha: Significance level for Granger tests (default: 0.05)
+        verbose: Print detailed Granger test output
+    
+    Returns:
+        DataFrame with columns: [index_name, lead_order, test_statistic, pvalue, significant]
+        where 'significant' indicates if lead Granger-causes target at specified alpha level
+    """
+    from statsmodels.tsa.stattools import grangercausalitytests
+    import warnings
+    import re
+    
+    # Extract lead features from bootstrap results
+    # Look for features with '_lead' in name and significance markers
+    if 'sig_95' in bootstrap_df.columns:
+        lead_features = bootstrap_df[
+            (bootstrap_df.index.str.contains('_lead', case=False)) &
+            (bootstrap_df['sig_95'] == True)
+        ]
+    elif 'pvalue' in bootstrap_df.columns:
+        lead_features = bootstrap_df[
+            (bootstrap_df.index.str.contains('_lead', case=False)) &
+            (bootstrap_df['pvalue'] < alpha)
+        ]
+    else:
+        # Fallback: just look for lead features
+        lead_features = bootstrap_df[bootstrap_df.index.str.contains('_lead', case=False)]
+    
+    if len(lead_features) == 0:
+        return pd.DataFrame(columns=['index_name', 'lead_order', 'test_statistic', 'pvalue', 'significant'])
+    
+    results = []
+    
+    for feat_name in lead_features.index:
+        # Parse feature name to extract index name and lead order
+        # Format: soc_{index}_lead{k} or {index}_xlead{k}
+        match = re.search(r'(.+?)_(?:x)?lead(\d+)', feat_name, re.IGNORECASE)
+        if not match:
+            continue
+        
+        base_name = match.group(1).replace('soc_', '').replace('ctl_', '')
+        lead_order = int(match.group(2))
+        
+        # Check if this index column exists in data
+        if base_name not in data_df.columns:
+            continue
+        
+        # Test Granger causality: X(t) -> Y(t+lead)
+        # Shift Y backward to align Y(t+lead) with X(t)
+        df_test = data_df[[y_col, base_name]].copy()
+        df_test[y_col] = df_test[y_col].shift(-lead_order)
+        df_test = df_test.dropna()
+        
+        if len(df_test) < 3 * lead_order + 10:
+            # Insufficient data
+            results.append({
+                'index_name': base_name,
+                'lead_order': lead_order,
+                'test_statistic': np.nan,
+                'pvalue': np.nan,
+                'significant': False
+            })
+            continue
+        
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore')
+                # Run Granger test with lag=1
+                result = grangercausalitytests(df_test, maxlag=1, verbose=verbose)
+            
+            # Extract F-test results
+            test_stat = result[1][0]['ssr_ftest'][0]
+            pvalue = result[1][0]['ssr_ftest'][1]
+            
+            results.append({
+                'index_name': base_name,
+                'lead_order': lead_order,
+                'test_statistic': float(test_stat),
+                'pvalue': float(pvalue),
+                'significant': pvalue < alpha
+            })
+        except Exception as e:
+            results.append({
+                'index_name': base_name,
+                'lead_order': lead_order,
+                'test_statistic': np.nan,
+                'pvalue': np.nan,
+                'significant': False
+            })
+    
+    return pd.DataFrame(results)
+
+
+def generate_lag_lead_interpretation_table(
+    bootstrap_df: pd.DataFrame,
+    granger_df: Optional[pd.DataFrame] = None,
+    alpha: float = 0.05
+) -> pd.DataFrame:
+    """
+    Generate interpretation table summarizing lag and lead effects per index.
+    
+    Identifies which indices have significant lag features, lead features, or both,
+    and provides interpretation guidance for each pattern.
+    
+    Args:
+        bootstrap_df: DataFrame with bootstrap coefficient results (index = feature names)
+                     Must have 'sig_95' column or 'pvalue' column for significance
+        granger_df: Optional DataFrame from validate_lead_granger() with Granger test results
+        alpha: Significance level (default: 0.05)
+    
+    Returns:
+        DataFrame with columns: [index, max_sig_lag, max_sig_lead, pattern, interpretation]
+        where pattern is one of: "Lag-only", "Lead-only", "Both", or "Neither"
+    """
+    import re
+    
+    # Extract significance info
+    if 'sig_95' in bootstrap_df.columns:
+        sig_features = bootstrap_df[bootstrap_df['sig_95'] == True]
+    elif 'pvalue' in bootstrap_df.columns:
+        sig_features = bootstrap_df[bootstrap_df['pvalue'] < alpha]
+    else:
+        # Fallback: use all features
+        sig_features = bootstrap_df
+    
+    # Parse feature names to extract index names and lag/lead orders
+    index_effects = {}
+    
+    for feat_name in sig_features.index:
+        # Match lag features: soc_{index}_lag{k} or {index}_xlag{k}
+        lag_match = re.search(r'(.+?)_(?:x)?lag(\d+)', feat_name, re.IGNORECASE)
+        if lag_match:
+            base_name = lag_match.group(1).replace('soc_', '').replace('ctl_', '')
+            lag_order = int(lag_match.group(2))
+            
+            if base_name not in index_effects:
+                index_effects[base_name] = {'lags': [], 'leads': []}
+            index_effects[base_name]['lags'].append(lag_order)
+            continue
+        
+        # Match lead features: soc_{index}_lead{k} or {index}_xlead{k}
+        lead_match = re.search(r'(.+?)_(?:x)?lead(\d+)', feat_name, re.IGNORECASE)
+        if lead_match:
+            base_name = lead_match.group(1).replace('soc_', '').replace('ctl_', '')
+            lead_order = int(lead_match.group(2))
+            
+            if base_name not in index_effects:
+                index_effects[base_name] = {'lags': [], 'leads': []}
+            index_effects[base_name]['leads'].append(lead_order)
+    
+    # Build interpretation table
+    results = []
+    
+    for index_name, effects in index_effects.items():
+        max_sig_lag = max(effects['lags']) if effects['lags'] else 0
+        max_sig_lead = max(effects['leads']) if effects['leads'] else 0
+        
+        # Determine pattern
+        if max_sig_lag > 0 and max_sig_lead > 0:
+            pattern = "Both"
+            interpretation = (
+                f"Both lagged (up to t-{max_sig_lag}) and lead (up to t+{max_sig_lead}) effects detected. "
+                "Suggests complex temporal relationship with both historical influence and anticipatory signals. "
+                "May indicate forward-looking discourse or common latent factors."
+            )
+        elif max_sig_lag > 0:
+            pattern = "Lag-only"
+            interpretation = (
+                f"Only lagged effects (up to t-{max_sig_lag}) detected. "
+                "Standard causal interpretation: past index values predict future returns. "
+                "Consistent with social signals influencing market behavior."
+            )
+        elif max_sig_lead > 0:
+            pattern = "Lead-only"
+            # Check if Granger validated
+            granger_validated = False
+            if granger_df is not None:
+                granger_validated = granger_df[
+                    (granger_df['index_name'] == index_name) &
+                    (granger_df['significant'] == True)
+                ].shape[0] > 0
+            
+            if granger_validated:
+                interpretation = (
+                    f"Only lead effects (up to t+{max_sig_lead}) detected and Granger-validated. "
+                    "Suggests anticipatory social signals or reverse causality (returns precede social response). "
+                    "May also indicate measurement timing issues or common drivers."
+                )
+            else:
+                interpretation = (
+                    f"Only lead effects (up to t+{max_sig_lead}) detected. "
+                    "May indicate anticipatory signals, reverse causality, or potential data leakage. "
+                    "Requires careful validation in out-of-sample predictions."
+                )
+        else:
+            pattern = "Neither"
+            interpretation = "No significant lag or lead effects detected in the model."
+        
+        results.append({
+            'index': index_name,
+            'max_sig_lag': max_sig_lag,
+            'max_sig_lead': max_sig_lead,
+            'pattern': pattern,
+            'interpretation': interpretation
+        })
+    
+    return pd.DataFrame(results)

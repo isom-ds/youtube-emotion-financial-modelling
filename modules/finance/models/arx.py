@@ -1,3 +1,29 @@
+"""ARX Models with Lag and Lead Features.
+
+This module implements AutoRegressive with eXogenous variables (ARX) models for
+financial return prediction, supporting both lag and lead features:
+
+**Lag Features (Past Values):**
+- X(t-k) → Y(t+1): Past values of X predict next-period returns
+- Standard causal interpretation: historical signals affect future outcomes
+
+**Lead Features (Future Values):**
+- X(t+k) → Y(t+1): Future values of X predict current returns
+- Interpretation:
+  * Anticipatory social signals (forward-looking discourse)
+  * Reverse causality (returns precede social media response)
+  * Common latent factors affecting both simultaneously
+  * IMPORTANT: Must verify that lead features are available at prediction time
+    to avoid lookahead bias in out-of-sample evaluation
+
+**Feature Scope:**
+- Leads are ONLY applied to emotion/social indices (ei, epi, ccd, etc.)
+- Controls and cross-assets remain lag-only to avoid simultaneity issues
+- AR terms use lags only (past returns predict future returns)
+
+See LagSpec dataclass for per-family lag and lead configuration.
+"""
+
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
@@ -133,10 +159,14 @@ def _classify_social_columns(columns: List[str]) -> Dict[str, List[str]]:
 @dataclass
 class LagSpec:
     """
-    Lag specification for ARX models with heterogeneous emotion index lags.
+    Lag and lead specification for ARX models with heterogeneous emotion indices.
     
-    Supports per-family lag orders for fine-grained control over how different
-    emotion indices enter the model with potentially different lag structures.
+    Supports per-family lag and lead orders for fine-grained control over temporal
+    dynamics. Lags capture past values (X(t-k) → Y(t+1)), while leads capture
+    future values (X(t+k) → Y(t+1)) indicating anticipatory signals.
+    
+    Leads are only applicable to emotion/social indices, not to AR terms,
+    controls, or cross-assets.
     """
     ar_p: int
     q_controls: int
@@ -149,6 +179,14 @@ class LagSpec:
     q_intensity: int = 0
     q_surprise: int = 0
     q_split: int = 0
+    # Per-family emotion index leads (heterogeneous) - NEW
+    f_ei: int = 0
+    f_epi: int = 0
+    f_epi_signed: int = 0
+    f_ccd: int = 0
+    f_intensity: int = 0
+    f_surprise: int = 0
+    f_split: int = 0
     # Backward compatibility: if set, overrides all family lags
     q_social: Optional[int] = None
     
@@ -184,11 +222,31 @@ class LagSpec:
         }
         return lag_map.get(family, 0)
     
+    def get_family_lead(self, family: str) -> int:
+        """Get lead order for a specific index family."""
+        lead_map = {
+            "ei": self.f_ei,
+            "epi": self.f_epi,
+            "epi_signed": self.f_epi_signed,
+            "ccd": self.f_ccd,
+            "intensity": self.f_intensity,
+            "surprise": self.f_surprise,
+            "split": self.f_split,
+        }
+        return lead_map.get(family, 0)
+    
     def has_any_social_lags(self) -> bool:
         """Check if any social/emotion index lags are enabled."""
         return any([
             self.q_ei > 0, self.q_epi > 0, self.q_epi_signed > 0,
             self.q_ccd > 0, self.q_intensity > 0, self.q_surprise > 0, self.q_split > 0
+        ])
+    
+    def has_any_social_leads(self) -> bool:
+        """Check if any social/emotion index leads are enabled."""
+        return any([
+            self.f_ei > 0, self.f_epi > 0, self.f_epi_signed > 0,
+            self.f_ccd > 0, self.f_intensity > 0, self.f_surprise > 0, self.f_split > 0
         ])
 
 
@@ -200,6 +258,16 @@ def _add_lags(
     include_lag0: bool,
     prefix: str,
 ):
+    """Add lag features (past values) to the design matrix.
+    
+    Args:
+        out: Output DataFrame to add features to
+        df: Source DataFrame with raw data
+        cols: Columns to create lag features for
+        max_lag: Maximum lag order
+        include_lag0: Whether to include contemporaneous (t) values
+        prefix: Feature name prefix (e.g., 'soc_', 'ctl_')
+    """
     if df is None or df.empty or not cols or max_lag < 0:
         return
     for c in cols:
@@ -207,6 +275,39 @@ def _add_lags(
             out[f"{prefix}{c}_lag0"] = df[c]
         for lag in range(1, max_lag + 1):
             out[f"{prefix}{c}_lag{lag}"] = df[c].shift(lag)
+
+
+def _add_leads(
+    out: pd.DataFrame,
+    df: pd.DataFrame,
+    cols: List[str],
+    max_lead: int,
+    prefix: str,
+):
+    """Add lead features (future values) to the design matrix.
+    
+    Lead features use negative shifts to align future index values with
+    current return predictions: X(t+k) → Y(t+1). This can indicate:
+    - Anticipatory signals in social media discourse
+    - Reverse causality (returns precede social response)  
+    - Common latent factors affecting both
+    
+    IMPORTANT: Lead features must be available at prediction time to avoid
+    lookahead bias in out-of-sample evaluation. Only applies to emotion indices.
+    
+    Args:
+        out: Output DataFrame to add features to
+        df: Source DataFrame with raw data
+        cols: Columns to create lead features for
+        max_lead: Maximum lead order
+        prefix: Feature name prefix (e.g., 'soc_')
+    """
+    if df is None or df.empty or not cols or max_lead < 1:
+        return
+    for c in cols:
+        for lead in range(1, max_lead + 1):
+            # Negative shift: df[c].shift(-lead) gets value at t+lead
+            out[f"{prefix}{c}_lead{lead}"] = df[c].shift(-lead)
 
 
 def make_group_arx_supervised(
@@ -224,12 +325,14 @@ def make_group_arx_supervised(
     Target is y(t+horizon). With horizon=1, that's next trading day's return.
 
     Key design choice (recommended):
-      - socials: allow lag0 (signal dated t predicts t+1)
+      - socials: allow lag0 (signal dated t predicts t+1), lags AND leads
       - controls: lagged-only (avoid subtle simultaneity / reporting timing issues)
       - cross-assets: lagged-only (avoid mechanical contemporaneous correlations)
     
-    Supports heterogeneous lag orders per emotion index family:
+    Supports heterogeneous lag and lead orders per emotion index family:
       - ei, epi, epi_signed, ccd, intensity, surprise, split
+      - Lags: X(t-k) → Y(t+1) (past values predict future)
+      - Leads: X(t+k) → Y(t+1) (future values, anticipatory signals)
     """
     y = y.astype(float)
 
@@ -239,7 +342,7 @@ def make_group_arx_supervised(
     for lag in range(1, lags.ar_p + 1):
         feat[f"y_lag{lag}"] = y.shift(lag)
 
-    # Social/emotion indices with heterogeneous lags per family
+    # Social/emotion indices with heterogeneous lags and leads per family
     if social is not None and not social.empty:
         classified, unclassified = _classify_social_columns(list(social.columns))
         
@@ -250,25 +353,48 @@ def make_group_arx_supervised(
                 if family_lag > 0 or include_lag0_social:
                     _add_lags(feat, social, cols, family_lag, include_lag0_social, "soc_")
         
+        # Add leads for each family with its specific lead order
+        for family, cols in classified.items():
+            if cols:
+                family_lead = lags.get_family_lead(family)
+                if family_lead > 0:
+                    _add_leads(feat, social, cols, family_lead, "soc_")
+        
         # Handle unclassified columns with max of all family lags (fallback)
         if unclassified:
             max_lag = max(
                 lags.q_ei, lags.q_epi, lags.q_epi_signed, 
                 lags.q_ccd, lags.q_intensity, lags.q_surprise, lags.q_split
             )
+            max_lead = max(
+                lags.f_ei, lags.f_epi, lags.f_epi_signed,
+                lags.f_ccd, lags.f_intensity, lags.f_surprise, lags.f_split
+            )
             if max_lag > 0 or include_lag0_social:
                 _add_lags(feat, social, unclassified, max_lag, include_lag0_social, "soc_")
+            if max_lead > 0:
+                _add_leads(feat, social, unclassified, max_lead, "soc_")
     
-    # Controls
+    # Controls (lag-only, no leads)
     if controls is not None:
         _add_lags(feat, controls, list(controls.columns), lags.q_controls, include_lag0_controls, "ctl_")
     
-    # Cross-asset predictors
+    # Cross-asset predictors (lag-only, no leads)
     if cross is not None:
         _add_lags(feat, cross, list(cross.columns), lags.q_cross, include_lag0_cross, "xas_")
 
     target = y.shift(-horizon).rename("target")
     data = pd.concat([feat, target], axis=1).dropna()
+    
+    # Validate minimum sample size after dropping NaN (from lags and leads)
+    min_samples = 100
+    if len(data) < min_samples:
+        import warnings
+        warnings.warn(
+            f"After creating lag/lead features and dropping NaN, only {len(data)} samples remain "
+            f"(minimum recommended: {min_samples}). Consider reducing lag/lead orders.",
+            UserWarning
+        )
 
     X_sup = data.drop(columns=["target"])
     y_sup = data["target"]
@@ -287,32 +413,41 @@ def automl_group_arx(
     initial_train_size: int = 60,
     step_size: int = 1,
     test_size: int = 1,
-    n_trials: int = 300,
+    n_trials: int = 10_000,
     random_seed: int = 42,
     p_range: Tuple[int, int] = (1, 7),
     q_controls_range: Tuple[int, int] = (0, 3),
     q_cross_range: Tuple[int, int] = (0, 1),
     # Per-family emotion index lag ranges (heterogeneous)
-    q_ei_range: Tuple[int, int] = (0, 5),
-    q_epi_range: Tuple[int, int] = (0, 5),
-    q_epi_signed_range: Tuple[int, int] = (0, 5),
-    q_ccd_range: Tuple[int, int] = (0, 5),
-    q_intensity_range: Tuple[int, int] = (0, 5),
-    q_surprise_range: Tuple[int, int] = (0, 5),
-    q_split_range: Tuple[int, int] = (0, 5),
+    q_ei_range: Tuple[int, int] = (0, 3),
+    q_epi_range: Tuple[int, int] = (0, 3),
+    q_epi_signed_range: Tuple[int, int] = (0, 3),
+    q_ccd_range: Tuple[int, int] = (0, 3),
+    q_intensity_range: Tuple[int, int] = (0, 3),
+    q_surprise_range: Tuple[int, int] = (0, 3),
+    q_split_range: Tuple[int, int] = (0, 3),
+    # Per-family emotion index lead ranges (heterogeneous) - NEW
+    f_ei_range: Tuple[int, int] = (0, 3),
+    f_epi_range: Tuple[int, int] = (0, 3),
+    f_epi_signed_range: Tuple[int, int] = (0, 3),
+    f_ccd_range: Tuple[int, int] = (0, 3),
+    f_intensity_range: Tuple[int, int] = (0, 3),
+    f_surprise_range: Tuple[int, int] = (0, 3),
+    f_split_range: Tuple[int, int] = (0, 3),
     model_family: str = "elasticnet",  # "elasticnet" or "ridge"
     include_lag0_social: bool = True,
     include_lag0_controls: bool = False,
     include_lag0_cross: bool = False,
     use_pruning: bool = True,
     cv_metric: str = "both",  # "mae", "rmse", or "both" (returns both, optimizes on mae)
+    n_early_stop: int = 500,  # Stop if no improvement after n consecutive trials
     # Deprecated parameter for backward compatibility
     q_social_range: Optional[Tuple[int, int]] = None,
 ):
     """
-    Optuna-based hyperparameter search for ARX models with heterogeneous emotion lags.
+    Optuna-based hyperparameter search for ARX models with heterogeneous emotion lags and leads.
     
-    Supports per-family lag orders for 7 emotion index families:
+    Supports per-family lag and lead orders for 7 emotion index families:
     - ei: Emotion Index (creator/community sentiment)
     - epi: Emotion Polarity Index (intensity × divergence)
     - epi_signed: Signed EPI (preserves valence direction)
@@ -320,6 +455,10 @@ def automl_group_arx(
     - intensity: Emotional Intensity
     - surprise: Informational novelty
     - split: Within-community polarization
+    
+    Lags capture past values (X(t-k) → Y(t+1)), while leads capture future values
+    (X(t+k) → Y(t+1)) indicating anticipatory signals or reverse causality. Leads are
+    ONLY applied to emotion indices, not to controls or cross-assets.
     
     Args:
         y: Target return series
@@ -330,12 +469,13 @@ def automl_group_arx(
         initial_train_size: Initial training window size
         step_size: Step size for rolling window
         test_size: Test set size per fold
-        n_trials: Number of Optuna trials (default 300 with pruning)
+        n_trials: Number of Optuna trials (default 10,000 for comprehensive search)
         random_seed: Random seed for reproducibility
         p_range: AR lag order range
         q_controls_range: Control variable lag range
         q_cross_range: Cross-asset lag range (set to (0,0) for univariate)
         q_*_range: Per-family emotion index lag ranges
+        f_*_range: Per-family emotion index lead ranges (NEW)
         model_family: "elasticnet" or "ridge"
         include_lag0_*: Whether to include contemporaneous (lag0) features
         use_pruning: Whether to use Optuna MedianPruner
@@ -343,11 +483,12 @@ def automl_group_arx(
         q_social_range: DEPRECATED - use per-family ranges instead
     
     Returns:
-        Dict with best_score_mae, best_score_rmse, best_lags, best_model_params,
-        coef_sorted, fitted_pipeline, study, feature_names
+        Dict with best_score_mae, best_score_rmse, best_lags (including lead specs),
+        best_model_params, coef_sorted, fitted_pipeline, study, feature_names
     """
     import optuna
     from sklearn.metrics import mean_squared_error
+    from tqdm.auto import tqdm
     
     # Handle deprecated q_social_range
     if q_social_range is not None:
@@ -404,7 +545,7 @@ def automl_group_arx(
         return float(np.mean(mae_scores)), float(np.mean(rmse_scores))
 
     def objective(trial: optuna.Trial) -> float:
-        # Build LagSpec with heterogeneous emotion index lags
+        # Build LagSpec with heterogeneous emotion index lags and leads
         lags = LagSpec(
             ar_p=trial.suggest_int("p", *p_range),
             q_controls=trial.suggest_int("q_controls", *q_controls_range),
@@ -416,6 +557,14 @@ def automl_group_arx(
             q_intensity=trial.suggest_int("q_intensity", *q_intensity_range),
             q_surprise=trial.suggest_int("q_surprise", *q_surprise_range),
             q_split=trial.suggest_int("q_split", *q_split_range),
+            # Lead parameters (NEW)
+            f_ei=trial.suggest_int("f_ei", *f_ei_range),
+            f_epi=trial.suggest_int("f_epi", *f_epi_range),
+            f_epi_signed=trial.suggest_int("f_epi_signed", *f_epi_signed_range),
+            f_ccd=trial.suggest_int("f_ccd", *f_ccd_range),
+            f_intensity=trial.suggest_int("f_intensity", *f_intensity_range),
+            f_surprise=trial.suggest_int("f_surprise", *f_surprise_range),
+            f_split=trial.suggest_int("f_split", *f_split_range),
         )
 
         if model_family == "ridge":
@@ -445,7 +594,36 @@ def automl_group_arx(
     
     # Suppress Optuna logging
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    
+    # Add progress bar and early stopping
+    with tqdm(total=n_trials, desc="Optuna Optimization") as pbar:
+        def callback(study, trial):
+            pbar.update(1)
+            pbar.set_postfix({"best_mae": study.best_value, "trials_since_improvement": trial.number - study.best_trial.number})
+        
+        # Early stopping: stop if no improvement after n_early_stop trials
+        callbacks = [callback]
+        if n_early_stop > 0:
+            # Custom early stopping based on best value not improving
+            class EarlyStoppingCallback:
+                def __init__(self, patience: int):
+                    self.patience = patience
+                    self.best_value = float('inf')
+                    self.trials_without_improvement = 0
+                
+                def __call__(self, study, trial):
+                    if study.best_value < self.best_value:
+                        self.best_value = study.best_value
+                        self.trials_without_improvement = 0
+                    else:
+                        self.trials_without_improvement += 1
+                    
+                    if self.trials_without_improvement >= self.patience:
+                        study.stop()
+            
+            callbacks.append(EarlyStoppingCallback(n_early_stop))
+        
+        study.optimize(objective, n_trials=n_trials, callbacks=callbacks, show_progress_bar=False)
 
     # Extract best parameters
     best = study.best_params.copy()
@@ -460,6 +638,14 @@ def automl_group_arx(
         q_intensity=best.pop("q_intensity"),
         q_surprise=best.pop("q_surprise"),
         q_split=best.pop("q_split"),
+        # Lead parameters (NEW)
+        f_ei=best.pop("f_ei"),
+        f_epi=best.pop("f_epi"),
+        f_epi_signed=best.pop("f_epi_signed"),
+        f_ccd=best.pop("f_ccd"),
+        f_intensity=best.pop("f_intensity"),
+        f_surprise=best.pop("f_surprise"),
+        f_split=best.pop("f_split"),
     )
     best_params = best
 
@@ -587,7 +773,7 @@ def run_three_assets_on_returns(
             initial_train_size=60,
             step_size=1,
             test_size=1,
-            n_trials=300,
+            n_trials=10_000,
             model_family="elasticnet",
             use_pruning=True,
             # key paper-safe timing choices:

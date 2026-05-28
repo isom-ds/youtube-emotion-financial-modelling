@@ -1,6 +1,6 @@
-index,r_btc,r_gold,r_spx
-intensity,0,0,0
-intensity_engweighted,0,0,0
-intensity_engweighted_topicweighted,0,0,0
-intensity_topicweighted,0,0,0
-split,0,0,0
+index,r_aapl,r_btc,r_gold,r_spx,r_spx_auto,r_spx_elec,r_spx_mach,r_spx_oilgas
+intensity,0,0,0,0,0,0,0,0
+intensity_engweighted,0,0,0,0,0,0,0,0
+intensity_engweighted_topicweighted,0,0,0,0,0,0,0,0
+intensity_topicweighted,0,0,0,0,0,0,0,0
+split,0,0,0,0,0,0,0,0

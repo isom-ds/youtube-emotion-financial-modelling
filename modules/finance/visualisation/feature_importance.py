@@ -40,8 +40,8 @@ def _get_feature_family(feature_name: str) -> str:
     """Map a feature name to its index family."""
     name_lower = feature_name.lower()
     
-    # Remove lag suffix for matching
-    base_name = name_lower.split("_lag")[0].replace("soc_", "")
+    # Remove lag/lead suffix for matching
+    base_name = name_lower.split("_lag")[0].split("_lead")[0].replace("soc_", "")
     
     for family, prefixes in INDEX_FAMILY_MAP.items():
         for prefix in prefixes:
@@ -57,6 +57,16 @@ def _get_feature_family(feature_name: str) -> str:
         return "cross_asset"
     
     return "other"
+
+
+def _is_lead_feature(feature_name: str) -> bool:
+    """Check if a feature is a lead (future value) feature."""
+    return "_lead" in feature_name.lower()
+
+
+def _is_lag_feature(feature_name: str) -> bool:
+    """Check if a feature is a lag (past value) feature."""
+    return "_lag" in feature_name.lower()
 
 
 def _get_significance_stars(pvalue: float, markers: Dict[float, str] = None) -> str:
@@ -86,10 +96,16 @@ def plot_coefficient_importance(
     figsize: Tuple[int, int] = (10, 8),
     color_positive: str = "#2ecc71",
     color_negative: str = "#e74c3c",
+    color_lag: str = "steelblue",
+    color_lead: str = "darkorange",
     show_ci: bool = True,
+    distinguish_lag_lead: bool = True,
 ) -> Tuple[Figure, pd.DataFrame]:
     """
     Plot coefficient importance with optional confidence intervals and significance markers.
+    
+    Supports visual distinction between lag features (past values) and lead features
+    (future values) for emotion indices, using different colors to aid interpretation.
     
     Args:
         coefs: Series of coefficients indexed by feature name
@@ -100,9 +116,12 @@ def plot_coefficient_importance(
         top_n: Number of top features to show
         title: Plot title
         figsize: Figure size (width, height)
-        color_positive: Color for positive coefficients
-        color_negative: Color for negative coefficients
+        color_positive: Color for positive coefficients (if not distinguishing lag/lead)
+        color_negative: Color for negative coefficients (if not distinguishing lag/lead)
+        color_lag: Color for lag features (if distinguish_lag_lead=True)
+        color_lead: Color for lead features (if distinguish_lag_lead=True)
         show_ci: Whether to show confidence interval error bars
+        distinguish_lag_lead: Use separate colors for lag vs lead features
     
     Returns:
         Tuple of (matplotlib Figure, summary DataFrame)
@@ -118,8 +137,19 @@ def plot_coefficient_importance(
     # Create figure
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Colors based on sign
-    colors = [color_positive if v >= 0 else color_negative for v in values]
+    # Determine colors based on lag/lead or sign
+    if distinguish_lag_lead:
+        colors = []
+        for feat in features:
+            if _is_lead_feature(feat):
+                colors.append(color_lead)
+            elif _is_lag_feature(feat):
+                colors.append(color_lag)
+            else:
+                # Fallback to sign-based coloring for non-lag/lead features
+                colors.append(color_positive if coefs.loc[feat] >= 0 else color_negative)
+    else:
+        colors = [color_positive if v >= 0 else color_negative for v in values]
     
     y_pos = np.arange(len(features))
     
@@ -154,9 +184,21 @@ def plot_coefficient_importance(
     ax.set_title(title)
     ax.grid(axis='x', alpha=0.3)
     
-    # Add legend for significance
+    # Add legends
+    legend_lines = []
+    if distinguish_lag_lead:
+        # Add lag/lead legend
+        from matplotlib.patches import Patch
+        lag_patch = Patch(facecolor=color_lag, edgecolor='black', label='Lag features (past values)')
+        lead_patch = Patch(facecolor=color_lead, edgecolor='black', label='Lead features (future values)')
+        ax.legend(handles=[lag_patch, lead_patch], loc='lower right', fontsize=9)
+        legend_y_offset = 0.92
+    else:
+        legend_y_offset = 0.98
+    
+    # Add significance legend
     legend_text = "  ".join([f"{stars}: p<{level}" for level, stars in sorted(sig_markers.items())])
-    ax.annotate(legend_text, xy=(0.02, 0.98), xycoords='axes fraction', 
+    ax.annotate(legend_text, xy=(0.02, legend_y_offset), xycoords='axes fraction', 
                 fontsize=9, va='top', ha='left', style='italic')
     
     plt.tight_layout()
@@ -165,6 +207,8 @@ def plot_coefficient_importance(
     summary = pd.DataFrame({
         'coefficient': coefs.loc[features],
         'abs_coefficient': coefs.loc[features].abs(),
+        'is_lag': [_is_lag_feature(f) for f in features],
+        'is_lead': [_is_lead_feature(f) for f in features],
     })
     if pvalues is not None:
         summary['pvalue'] = pvalues.loc[features] if hasattr(pvalues, 'loc') else [pvalues.get(f, np.nan) for f in features]

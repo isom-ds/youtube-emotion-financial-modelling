@@ -1,5 +1,5 @@
-index,r_btc,r_gold,r_spx
-epi_signed,0,0,1
-epi_signed_engweighted,0,0,1
-epi_signed_engweighted_topicweighted,0,0,0
-epi_signed_topicweighted,0,0,0
+index,r_aapl,r_btc,r_gold,r_spx,r_spx_auto,r_spx_elec,r_spx_mach,r_spx_oilgas
+epi_signed,1,0,0,1,0,1,0,0
+epi_signed_engweighted,1,0,0,1,0,1,0,0
+epi_signed_engweighted_topicweighted,0,0,0,0,0,0,0,0
+epi_signed_topicweighted,0,0,0,0,0,0,0,0
