@@ -111,6 +111,7 @@ B. V. Kok-Shun, J. Chan, G. Peko, and D. Sundaram, "Flaring Emotions, Hot Topics
   booktitle = {{ACIS} 2025 {Proceedings}},
   author    = {Kok-Shun, Brice Valentin and Chan, Johnny and Peko, Gabrielle and Sundaram, David},
   year      = {2025},
+  url      = {https://aisel.aisnet.org/acis2025/263},
 }
 ```
 
